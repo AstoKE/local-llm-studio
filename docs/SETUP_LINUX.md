@@ -24,3 +24,11 @@ LAN mode is deliberately not enabled in Phase 1. Do not change the Next.js bindi
 - GPU unavailable: check vendor drivers. CPU/RAM remain usable. AMD/Intel telemetry is currently unavailable rather than guessed; future adapters may expose it.
 - Install fails with DNS/network errors: dependencies require network for initial download. Runtime can work offline after dependencies and models exist.
 - Memory errors during future inference: choose smaller or more quantized models and reduce context; this application does not yet launch inference.
+
+## Phase 2 configuration
+
+Use `backend/requirements.lock.txt` for the resolved dependency set. Generate a random administrator token as described in README, set STUDIO_ADMIN_TOKEN in `.env` and restart FastAPI before using Models actions. Enter the token in Models; it stays in page memory. Never put it into NEXT_PUBLIC variables. STUDIO_WEB_ORIGIN must match the exact browser origin (default http://127.0.0.1:3000). Both services still bind localhost; LAN mode is not supported yet.
+
+The existing migration 0001 is sufficient for Phase 2. Restart both services after updating source. To download your first model in the UI, enter its full identifier and administrator token on Models. Streaming pulls report provider layer progress; closing the stream does not promise that the provider immediately cancels the download. Inference may take up to five minutes before timing out, including model load. Check Ollama logs for out-of-memory or unsupported-model errors.
+
+The configured web origin also permits localhost, 127.0.0.1 and IPv6 loopback aliases with the same scheme and port. Different ports still require STUDIO_WEB_ORIGIN to be updated. After source changes to React hooks, fully reload the browser if a stale Fast Refresh dependency warning remains.

@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from backend.core.config import settings
 from backend.api.routes import router
+from backend.api.workspace import router as workspace_router
 from backend.providers.ollama import OllamaProvider
 from backend.providers.base import ProviderUnavailable
 
@@ -31,3 +32,5 @@ async def unavailable(request: Request, exc: ProviderUnavailable):
     return JSONResponse({'detail': str(exc)}, status_code=503)
 
 app.include_router(router)
+
+app.include_router(workspace_router)

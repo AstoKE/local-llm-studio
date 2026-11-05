@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', extra='ignore', env_prefix='STUDIO_')
     ollama_url: HttpUrl = 'http://127.0.0.1:11434'
     database_url: str = 'sqlite:///./data/studio.db'
+    web_origin: HttpUrl = 'http://127.0.0.1:3000'
     admin_token: str = ''
 
 @lru_cache

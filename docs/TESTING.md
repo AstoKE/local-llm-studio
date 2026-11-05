@@ -41,3 +41,33 @@ API integration test uses an isolated temporary database, actual Alembic migrati
 Browser acceptance: all seven routes, narrow viewport navigation, refresh, offline banner, backend failure state, no-model empty state, real model metadata and session chart accumulation. Inspect browser console and ensure no external requests or exposed secrets. This manual frontend check has not yet run. Automated frontend tests are still required in Phase 5.
 
 Do not progress beyond Phase 1 acceptance until its blocked checks pass. Freeze resolved dependencies, review security advisories and commit lockfiles before production deployment.
+
+## Phase 2 verification update (2026-11-05)
+
+Dependencies were subsequently installed by the user. Current results supersede initial dependency-blocked results above:
+
+- PASS: `.venv/bin/alembic upgrade head` and `.venv/bin/alembic current` — revision 0001.
+- PASS: `npm run typecheck` in apps/web.
+- PASS: nine backend tests via `.venv/bin/python -m unittest discover -s backend/tests -v`. Isolated temporary SQLite with ASGITransport; deterministic httpx fixtures, not actual inference. Covers conversation CRUD/history, edit/regenerate, presets, model defaults, explicit snapshots, Playground isolation, partial/disconnected and incomplete streams, job cleanup, administrator authorization, cross-origin rejection and unsupported parameter rejection.
+- PASS: three frontend transport tests via `npm test` in apps/web (Node 24). Run without test-process isolation because sandbox child-process behavior can otherwise report only the wrapper file. Covers split UTF-8/NDJSON, authorization/error handling and reader cancellation.
+- PASS: Python source compilation.
+- BLOCKED: production build fails at child-process invocation of `tsc --showConfig`. A direct Node spawnSync reproduction returns EPERM; directly running TypeScript works. No successful production build is claimed. Run `npm run build` on the host.
+- UNAVAILABLE from this sandbox: localhost backend and Ollama HTTP services. User reports backend/frontend startup works on host. No real model, GPU or browser end-to-end verification is claimed.
+
+### Required host acceptance for Phase 2
+
+1. Start Ollama, backend and frontend. Check health and model listing; run `npm run typecheck`, `npm test` and `npm run build`.
+2. Configure STUDIO_ADMIN_TOKEN, restart backend. Confirm missing/wrong token blocks mutations. Download a chosen model and inspect progress, metadata and loaded state. Test load/unload/delete only with a model you intend to modify.
+3. Chat: verify incremental text, stop while generating, reload saved conversation, rename/search/delete, edit an earlier prompt, regenerate. Confirm the model receives the intended history.
+4. Save/load a preset and per-model defaults. Ensure invalid/unsupported options return 422. Observe actual model memory limits for context size.
+5. Playground: generate without a saved conversation; explicitly save it and open it in Chat. Inspect code rendering, narrow viewport and console errors.
+6. Stop Ollama during a response; verify error state, retained partial text and released active-job count. Confirm future history excludes failed assistant output.
+7. Keep localhost binding. LAN/RBAC acceptance remains a later phase.
+
+No real model downloads, deletions or loads were performed automatically in this environment. The developer did not create the Phase 1 commit because .git is read-only to the agent; commit 0cfe0fe (Phase 1) became visible during work.
+
+### Chat hot-reload and send fixes
+
+Frontend hot updates now remount ChatWorkspace (`@refresh reset`) when its hook structure changes. Sending errors survive the subsequent conversation reload; missing-model state has a retry action, waiting responses have a status, Enter submits and Shift+Enter inserts a newline. Browser acceptance still needs a host check.
+
+Origin checks accept localhost/127.0.0.1/IPv6 loopback aliases only on the configured scheme and port; other hosts/ports and cross-site requests stay denied. Eleven backend tests pass, including a browser-origin conversation-create/chat flow with localhost and propagation of an actual provider error fixture. TypeScript and three frontend transport tests pass. These remain fixture-based tests, not live Ollama/browser verification. Restart FastAPI after this update and fully reload the frontend to clear stale development hook state.

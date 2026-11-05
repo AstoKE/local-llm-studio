@@ -29,3 +29,13 @@ Chat: persist input, stream provider events, preserve provider token/duration co
 Version ranges are bounded by major versions. Frontend lockfile and exact Python freeze must be generated after successful dependency resolution. Phase 1 cannot be considered fully verified until migrations, backend API integration tests, frontend type checks, production build and browser checks pass.
 
 References: [Next.js installation](https://nextjs.org/learn/react-foundations/installation), [Ollama API specification](https://github.com/ollama/ollama/blob/main/docs/openapi.yaml).
+
+## Phase 2 implementation update
+
+The provider contract now includes async chat/pull streams and model operations. API workspace routes own conversation CRUD, bounded strict Pydantic options, presets, per-model configuration records and explicit Playground snapshots. `services/chat.py` constructs server history, serializes generation per conversation, persists completed/failed/interrupted responses and releases active-job state. The upstream iterator is explicitly closed. Client disconnects close the stream; actual runtime cancellation behavior must still be tested.
+
+FastAPI and Next.js remain loopback-only. Model operations always require constant-time bearer-token authentication, including requests proxied by Next.js. Browser mutation origin is checked against STUDIO_WEB_ORIGIN; frontend never stores the token in localStorage. This is a single-user local workspace, not completed RBAC or LAN security. Settings and preset data use the existing records table; no new migration is required. Synchronous short SQLite transactions run on the serving process. Use one Uvicorn worker: active conversation locks and job counts are process-local.
+
+Messages hold raw provider statistics and a separate application TTFT measurement. Frontend decodes NDJSON incrementally with UTF-8 support, exposes stop/copy/edit/regenerate and uses safe React text rendering with a limited Markdown subset. No raw HTML from models is executed. Exact dependencies are captured in frontend package-lock.json and backend requirements.lock.txt; successful resolution does not constitute a dependency security audit.
+
+The earlier foundation-only scope paragraphs describe the Phase 1 baseline. Current feature/API status is maintained in FEATURES.md and API.md.

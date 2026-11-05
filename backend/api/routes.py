@@ -5,6 +5,7 @@ from backend.database.session import SessionLocal
 from backend.models.entities import Conversation, Record
 from backend.providers.base import ProviderUnavailable
 from backend.services.system import system_snapshot
+from backend.services.chat import active_jobs
 
 router = APIRouter(prefix='/api')
 
@@ -12,7 +13,7 @@ router = APIRouter(prefix='/api')
 async def health():
     with SessionLocal() as session:
         session.execute(text('SELECT 1'))
-    return {'status': 'ok', 'database': 'connected', 'phase': 1}
+    return {'status': 'ok', 'database': 'connected', 'phase': 2}
 
 @router.get('/models')
 async def models(request: Request):
@@ -32,4 +33,4 @@ async def dashboard(request: Request):
         conversations = session.scalars(select(Conversation).order_by(Conversation.created_at.desc()).limit(5)).all()
         benchmarks = session.scalars(select(Record).where(Record.kind == 'benchmark').order_by(Record.created_at.desc()).limit(5)).all()
     return dict(ollama=ollama, system=system, conversations=[dict(id=c.id, title=c.title) for c in conversations],
-                benchmarks=[dict(id=b.id, name=b.name, payload=b.payload) for b in benchmarks], active_jobs=0)
+                benchmarks=[dict(id=b.id, name=b.name, payload=b.payload) for b in benchmarks], active_jobs=len(active_jobs))
