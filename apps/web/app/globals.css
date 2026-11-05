@@ -1,0 +1,2 @@
+@import "tailwindcss";
+:root{color-scheme:dark}body{margin:0;background:#0c0e11;color:#e5e7eb;font-family:Arial,Helvetica,sans-serif;font-size:14px}*{box-sizing:border-box}button,a{ -webkit-tap-highlight-color:transparent}a{text-decoration:none;color:inherit}.panel{background:#121519;border:1px solid #262b32;border-radius:12px}.muted{color:#919aa8}code{font-family:monospace}::selection{background:#235b48}button{cursor:pointer}
