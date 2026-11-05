@@ -2,7 +2,7 @@
 
 Linux-first local inference workspace: Next.js App Router, TypeScript, Tailwind, Radix/shadcn-style primitives, Recharts, FastAPI, SQLAlchemy, Alembic and SQLite. No cloud service is required.
 
-Phase 2 implements streaming Ollama chat, saved conversations, model management and inference configuration. Hardware inference and production-browser acceptance still require local verification; see [testing](docs/TESTING.md).
+Phase 3 adds persistent host and inference monitoring to streaming Ollama chat, saved conversations, model management and inference configuration. Hardware inference and production-browser acceptance still require local verification; see [testing](docs/TESTING.md).
 
 ## Start
 
@@ -22,7 +22,7 @@ cd ../..
 
 Open http://127.0.0.1:3000. Backend listens on 127.0.0.1:8000; startup applies migrations. Start Ollama separately with `ollama serve`. Choose an exact model identifier from https://ollama.com/library appropriate for your memory.
 
-## Phase 2 usage
+## Chat and model usage
 
 - **Chat:** select an installed model, configure inference, send a message. Conversations and settings persist locally. Search, rename, delete, copy, edit/resend, regenerate and stop are available. Editing removes later messages.
 - **Playground:** inference without conversation persistence; explicitly save the session to continue later in Chat.
@@ -34,3 +34,11 @@ For model operations, generate a secret with `.venv/bin/python -c 'import secret
 If opening the frontend with a hostname other than `127.0.0.1`, set `STUDIO_WEB_ORIGIN` to its exact origin and restart FastAPI. It defaults to `http://127.0.0.1:3000` for cross-origin request protection.
 
 See [Linux setup](docs/SETUP_LINUX.md), [architecture](docs/ARCHITECTURE.md), [API](docs/API.md), [feature status](docs/FEATURES.md), and [verification](docs/TESTING.md).
+
+## Phase 3 monitoring
+
+Restart the backend with `./scripts/backend.sh` to apply migration **0002**, then refresh the frontend. Existing conversations are preserved. Monitoring shows host CPU/RAM, GPU utilization and device memory where drivers expose them, provider token counters and timing breakdowns, server-clock first-token latency, model filtering and paginated generation history.
+
+The backend samples even when the browser is closed. Defaults: five-second sampling delay, 24-hour host history (at most 20,000 samples) and at most 10,000 inference records. Change STUDIO_METRICS_INTERVAL_SECONDS or STUDIO_METRICS_RETENTION_HOURS in .env if needed. Playground performance metadata is recorded; its prompts and responses are not stored in monitoring history. Existing older messages are not backfilled with invented metrics.
+
+Provider-derived tokens/second uses eval_count / eval_duration; first-token and server duration are separate application-clock observations. A missing measurement remains unknown. AMD sysfs support is best effort; Intel devices without exposed counters show unavailable fields. See docs/TESTING.md for verification limits and local acceptance steps.

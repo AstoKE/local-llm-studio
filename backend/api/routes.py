@@ -13,7 +13,7 @@ router = APIRouter(prefix='/api')
 async def health():
     with SessionLocal() as session:
         session.execute(text('SELECT 1'))
-    return {'status': 'ok', 'database': 'connected', 'phase': 2}
+    return {'status': 'ok', 'database': 'connected', 'phase': 3}
 
 @router.get('/models')
 async def models(request: Request):
@@ -28,7 +28,10 @@ async def dashboard(request: Request):
             return dict(connected=True, version=version.get('version'), models=models, loaded=loaded, error=None)
         except ProviderUnavailable as exc:
             return dict(connected=False, version=None, models=None, loaded=None, error=str(exc))
-    ollama, system = await asyncio.gather(runtime(), system_snapshot())
+    async def snapshot():
+        sampler = getattr(request.app.state, 'metrics', None)
+        return sampler.latest if sampler and sampler.latest else await system_snapshot()
+    ollama, system = await asyncio.gather(runtime(), snapshot())
     with SessionLocal() as session:
         conversations = session.scalars(select(Conversation).order_by(Conversation.created_at.desc()).limit(5)).all()
         benchmarks = session.scalars(select(Record).where(Record.kind == 'benchmark').order_by(Record.created_at.desc()).limit(5)).all()

@@ -39,3 +39,15 @@ FastAPI and Next.js remain loopback-only. Model operations always require consta
 Messages hold raw provider statistics and a separate application TTFT measurement. Frontend decodes NDJSON incrementally with UTF-8 support, exposes stop/copy/edit/regenerate and uses safe React text rendering with a limited Markdown subset. No raw HTML from models is executed. Exact dependencies are captured in frontend package-lock.json and backend requirements.lock.txt; successful resolution does not constitute a dependency security audit.
 
 The earlier foundation-only scope paragraphs describe the Phase 1 baseline. Current feature/API status is maintained in FEATURES.md and API.md.
+
+## Phase 3 implementation
+
+`services/monitoring.py` owns a lifespan-managed background sampler. It samples host hardware, caches the last observation for dashboard reads, and writes independent system_samples rows. Blocking CPU/kernel/SQLite sampling work is dispatched to asyncio's thread executor. GPU subprocesses use fixed arguments, bounded timeouts and cancellation cleanup; no shell is invoked. Sampling waits the configured interval after each collection, so actual sample spacing includes collection time and is visible through UTC timestamps. Graceful shutdown cancels the sampler task.
+
+`services/system.py` prefers nvidia-smi measurements and merges additional DRM devices identified through read-only sysfs. AMD gpu_busy_percent/mem_info_vram_* values are read only when exposed. Intel/other unsupported fields remain null. Device IDs allow chart series to distinguish multiple GPUs; source is attached to every device. These whole-host/device readings do not measure the memory attributable to one inference job.
+
+Each inference attempt persists an independent InferenceRun in the stream finalizer, including interrupted/failed attempts and Playground runs. Message content is excluded. Provider token counts/durations retain their original units; calculated throughput is derived from output evaluation, and application TTFT/lifetime are labeled separately. Job locks are released even if message persistence fails. Telemetry persistence failure is logged and does not replace a valid model response.
+
+Migration 0002 introduces the two indexed tables without changing existing chat tables. Bounded retention avoids indefinite growth: system time cutoff plus a 20,000-row cap, inference count cap of 10,000. Monitoring reads are bounded and select up to 600 actual host points; inference pages use stable descending IDs. Recent cache is marked stale rather than presenting old values as live. Browser pause affects polling only. Authentication/LAN and sequential benchmarking remain Phase 4.
+
+References: [Ollama native API](https://github.com/ollama/ollama/blob/main/docs/api.md), [AMDGPU sysfs memory reporting](https://docs.kernel.org/gpu/amdgpu/driver-misc.html), [AMDGPU utilization interfaces](https://kernel.org/doc/html/latest/gpu/amdgpu/thermal.html).

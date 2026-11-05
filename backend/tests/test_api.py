@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 _database = tempfile.TemporaryDirectory()
 os.environ['STUDIO_DATABASE_URL'] = f'sqlite:///{_database.name}/test.db'
@@ -17,6 +18,12 @@ from backend.services.chat import active_conversations, active_jobs
 
 class APITests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # Run fixture SQLite operations inline; sandbox disallows event-loop thread wakeups.
+        async def inline(function, *args, **kwargs):
+            return function(*args, **kwargs)
+        self.thread_patch = patch('asyncio.to_thread', side_effect=inline)
+        self.thread_patch.start()
+        self.addCleanup(self.thread_patch.stop)
         Base.metadata.drop_all(engine)
         Base.metadata.create_all(engine)
         self.requests = []
@@ -136,3 +143,31 @@ class APITests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('model fixture not found', response.text)
             self.assertIn('"type": "error"', response.text)
             self.assertFalse(active_jobs)
+
+    async def test_monitoring_persists_chat_and_playground_statistics_and_filters(self):
+        from datetime import datetime, timezone
+        from types import SimpleNamespace
+        from backend.services.monitoring import save_sample
+        app.state.metrics = SimpleNamespace(latest={'sampled_at':datetime.now(timezone.utc).isoformat(), 'cpu_percent':10}, error=None)
+        try:
+            await self.client.post('/api/chat', json={'model':'model-a', 'content':'private playground prompt'})
+            cid = await self.create()
+            await self.client.post('/api/chat', json={'model':'fixture', 'conversation_id':cid, 'content':'saved prompt'})
+            for i in range(605):
+                save_sample({'sampled_at':datetime.now(timezone.utc).isoformat(), 'cpu_percent':i/10})
+            response = await self.client.get('/api/monitoring?model=model-a')
+            self.assertEqual(response.status_code,200,response.text)
+            data = response.json()
+            self.assertEqual(len(data['runs']),1)
+            self.assertEqual(data['runs'][0]['source'],'playground')
+            self.assertEqual(data['runs'][0]['tokens_per_second'],2)
+            self.assertNotIn('private playground prompt',response.text)
+            self.assertEqual(len(data['system_history']),600)
+            self.assertEqual(data['system_history'][0]['cpu_percent'],0)
+            self.assertEqual(data['system_history'][-1]['cpu_percent'],60.4)
+            self.assertEqual((await self.client.get('/api/monitoring?minutes=0')).status_code,422)
+            first = (await self.client.get('/api/monitoring')).json()['runs'][0]['id']
+            older = (await self.client.get(f'/api/monitoring?before_id={first}')).json()
+            self.assertTrue(all(r['id']<first for r in older['runs']))
+        finally:
+            del app.state.metrics

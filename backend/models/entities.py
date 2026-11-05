@@ -30,3 +30,18 @@ class Record(Base):
     name: Mapped[str] = mapped_column(String(200))
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+class SystemSample(Base):
+    __tablename__ = 'system_samples'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+
+class InferenceRun(Base):
+    __tablename__ = 'inference_runs'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(32), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    model: Mapped[str] = mapped_column(String(200), index=True)
+    source: Mapped[str] = mapped_column(String(20))
+    statistics: Mapped[dict] = mapped_column(JSON)

@@ -71,3 +71,25 @@ No real model downloads, deletions or loads were performed automatically in this
 Frontend hot updates now remount ChatWorkspace (`@refresh reset`) when its hook structure changes. Sending errors survive the subsequent conversation reload; missing-model state has a retry action, waiting responses have a status, Enter submits and Shift+Enter inserts a newline. Browser acceptance still needs a host check.
 
 Origin checks accept localhost/127.0.0.1/IPv6 loopback aliases only on the configured scheme and port; other hosts/ports and cross-site requests stay denied. Eleven backend tests pass, including a browser-origin conversation-create/chat flow with localhost and propagation of an actual provider error fixture. TypeScript and three frontend transport tests pass. These remain fixture-based tests, not live Ollama/browser verification. Restart FastAPI after this update and fully reload the frontend to clear stale development hook state.
+
+## Phase 3 verification (2026-11-05)
+
+- PASS: 18 backend tests, including monitoring history/model filtering, pagination bounds, Chat/Playground performance persistence without prompt content, actual-point downsampling preserving first/last values, retention cutoff, provider-rate calculation and unknown/zero handling, CPU-only/permission fallback, multiple NVIDIA devices with partial readings, AMD/Intel fixture fields and GPU timeout cleanup.
+- PASS: five frontend tests, including stable GPU identity/nullable history series and measurement unit/unknown formatting.
+- PASS: strict TypeScript check and Python compilation.
+- PASS: isolated Alembic 0001 → 0002 → 0001 → 0002 round trip with an existing conversation/message retained. Production database was not modified by this check.
+- PASS: direct hardware reads: CPU 11.9% at test instant, 16 logical CPUs, RAM total 15,961,358,336 bytes. AMD PCI 0000:35:00.0 exposed gpu_busy_percent=98 and mem_info_vram_used≈448.6 MiB / total 512 MiB at that instant. These are whole-device kernel fields, not proof of inference acceleration. NVIDIA PCI 0000:01:00.0 was enumerated through sysfs but exposed no usage/memory fields.
+- UNAVAILABLE: nvidia-smi could not communicate with its driver; localhost Ollama HTTP connection refused from sandbox. Actual NVIDIA utilization/VRAM and newly recorded statistics from live inference remain unverified.
+- BLOCKED: Next.js production build still fails at spawning tsc --showConfig; this sandbox's Node spawnSync returns EPERM. TypeScript itself runs successfully. No production-build success is claimed.
+- NOT VERIFIED: browser rendering/interactions for the new Monitoring page; actual background sampler behavior on the user's host. The user previously supplied a working real-model chat screenshot; that is user-provided evidence, not an agent inference test.
+
+Fixture tests execute blocking I/O inline via a patched asyncio.to_thread because this sandbox can stall thread-to-event-loop wakeups/executor shutdown. This validates database queries/sampling orchestration without claiming real thread-runtime integration. GPU parser, subprocess and sysfs fixture tests are not hardware verification.
+
+### Phase 3 host acceptance
+
+1. Stop/restart backend with scripts/backend.sh. Confirm Alembic revision 0002, previous chats intact and /api/health reports phase 3.
+2. Open Monitoring: CPU/RAM and timestamp should update; compare with a system utility. Close the browser for a minute, reopen and confirm history continued. Restart backend and confirm history remains.
+3. Generate one Chat and one Playground reply. Check model/source, output/prompt tokens, timing detail and throughput against the actual Ollama final response. Confirm application TTFT is labeled separately. Try interrupted/failed generation: absent counters must remain unknown.
+4. Exercise model/time filters, older/newer pages, pause/resume, GPU selection and narrow layout. Check chart units and that missing device readings are not drawn as zero. Watch browser console.
+5. Verify background sampler shutdown on Ctrl+C, and that no duplicate sampler runs are created (use one worker). Inspect logs for storage errors. Perform real NVIDIA validation only with its driver available.
+6. Run backend/frontend tests and npm run build on the host. Keep Phase 4 pending until these acceptance checks pass.

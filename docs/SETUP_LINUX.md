@@ -32,3 +32,13 @@ Use `backend/requirements.lock.txt` for the resolved dependency set. Generate a 
 The existing migration 0001 is sufficient for Phase 2. Restart both services after updating source. To download your first model in the UI, enter its full identifier and administrator token on Models. Streaming pulls report provider layer progress; closing the stream does not promise that the provider immediately cancels the download. Inference may take up to five minutes before timing out, including model load. Check Ollama logs for out-of-memory or unsupported-model errors.
 
 The configured web origin also permits localhost, 127.0.0.1 and IPv6 loopback aliases with the same scheme and port. Different ports still require STUDIO_WEB_ORIGIN to be updated. After source changes to React hooks, fully reload the browser if a stale Fast Refresh dependency warning remains.
+
+## Phase 3 update
+
+Stop the backend and restart with `./scripts/backend.sh`; this applies migration 0002 before serving. The isolated upgrade/downgrade test preserved prior conversations/messages. Back up data/studio.db with the backend stopped before any update. Refresh the frontend and visit Monitoring. Generate a new Chat/Playground reply to populate generation history; older messages are not retroactively imported.
+
+Sampling runs while FastAPI is running, independent of browser tabs. Defaults: STUDIO_METRICS_INTERVAL_SECONDS=5 (allowed 2–60), STUDIO_METRICS_RETENTION_HOURS=24 (1–168). The 20,000 sample cap still applies with longer retention. Inference history retains the latest 10,000 attempts; Playground keeps performance metadata without message content. Use a single Uvicorn worker.
+
+GPU fields can be partially unavailable. nvidia-smi needs a working NVIDIA driver. AMD sysfs counters require driver/read permissions and may expose a limited device memory pool; they must not be interpreted as total shared system memory or inference allocation. Intel utilization is unavailable unless its kernel interface exposes a readable supported field. No driver installation or GPU configuration is changed by the app.
+
+If Monitoring reports stale samples or storage errors, inspect backend logs, disk space and migration revision (`.venv/bin/alembic current`, expected 0002). A pause in the browser does not stop recording. No new runtime dependencies are needed for Phase 3.

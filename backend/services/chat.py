@@ -1,5 +1,6 @@
 from contextlib import aclosing
 import json
+import logging
 import time
 from fastapi import HTTPException
 from sqlalchemy import delete, select
@@ -7,6 +8,7 @@ from backend.database.session import SessionLocal
 from backend.models.entities import Conversation, Message
 from backend.providers.base import InferenceProvider, ProviderUnavailable
 from backend.schemas.inference import ChatInput
+from backend.services.monitoring import save_run
 
 # One process / one worker: serialize each conversation; unrelated chats may run concurrently.
 active_conversations: set[int] = set()
@@ -70,7 +72,7 @@ async def generate(provider: InferenceProvider, body: ChatInput, history: list[d
                     content += text
                     yield event({'type': 'token', 'content': text})
                 if chunk.get('done'):
-                    stats.update({k: chunk[k] for k in ['eval_count', 'eval_duration', 'prompt_eval_count', 'prompt_eval_duration', 'total_duration', 'load_duration', 'done_reason'] if k in chunk})
+                    stats.update({k: chunk[k] for k in ['eval_count', 'eval_duration', 'prompt_eval_count', 'prompt_eval_cached_count', 'prompt_eval_duration', 'total_duration', 'load_duration', 'done_reason'] if k in chunk})
                     stats['status'] = 'completed'
                     completed = True
                     break
@@ -81,10 +83,17 @@ async def generate(provider: InferenceProvider, body: ChatInput, history: list[d
         stats['status'] = 'failed'
         yield event({'type': 'error', 'detail': str(exc)})
     finally:
-        # Persist partial output on disconnect, without sending it in subsequent context.
-        if body.conversation_id is not None:
-            if content or completed:
+        stats['server_duration_seconds'] = time.perf_counter() - started
+        try:
+            # Playground performance persists, but never its prompt or generated content.
+            save_run(job, body.model, 'chat' if body.conversation_id is not None else 'playground', stats)
+        except Exception:
+            logging.getLogger(__name__).exception('Failed to persist inference performance')
+        try:
+            if body.conversation_id is not None and (content or completed):
                 with SessionLocal.begin() as session:
                     session.add(Message(conversation_id=body.conversation_id, role='assistant', content=content, statistics=stats))
-            active_conversations.discard(body.conversation_id)
-        active_jobs.discard(job)
+        finally:
+            if body.conversation_id is not None:
+                active_conversations.discard(body.conversation_id)
+            active_jobs.discard(job)

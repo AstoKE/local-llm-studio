@@ -1,4 +1,5 @@
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+import asyncio
 import hmac
 import httpx
 from fastapi import FastAPI, Request
@@ -6,16 +7,25 @@ from fastapi.responses import JSONResponse
 from backend.core.config import settings
 from backend.api.routes import router
 from backend.api.workspace import router as workspace_router
+from backend.api.monitoring import router as monitoring_router
 from backend.providers.ollama import OllamaProvider
 from backend.providers.base import ProviderUnavailable
+from backend.services.monitoring import MetricsSampler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with httpx.AsyncClient(base_url=str(settings().ollama_url), timeout=4, trust_env=False) as client:
         app.state.provider = OllamaProvider(client)
-        yield
+        app.state.metrics = MetricsSampler()
+        sampler = asyncio.create_task(app.state.metrics.run())
+        try:
+            yield
+        finally:
+            sampler.cancel()
+            with suppress(asyncio.CancelledError):
+                await sampler
 
-app = FastAPI(title='Local LLM Studio', version='0.1.0', lifespan=lifespan)
+app = FastAPI(title='Local LLM Studio', version='0.3.0', lifespan=lifespan)
 
 @app.middleware('http')
 async def access_control(request: Request, call_next):
@@ -34,3 +44,5 @@ async def unavailable(request: Request, exc: ProviderUnavailable):
 app.include_router(router)
 
 app.include_router(workspace_router)
+
+app.include_router(monitoring_router)
