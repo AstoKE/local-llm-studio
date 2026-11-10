@@ -24,3 +24,7 @@ test('stream cancels reader when server error callback throws',async()=>{
  await assert.rejects(()=>stream('/chat',{},new AbortController().signal,e=>{throw Error(e.detail)}),/OOM/);
  assert.equal(cancelled,true);
 });
+test('validation responses explain which field failed',async()=>{
+ globalThis.fetch=async()=>Response.json({detail:[{loc:['body','ollama_url'],msg:'Provider URL must not contain credentials.'}]},{status:422});
+ await assert.rejects(()=>api('/admin/settings'),/body.ollama_url: Provider URL must not contain credentials/);
+});

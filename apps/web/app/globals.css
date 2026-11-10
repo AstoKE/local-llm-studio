@@ -1,2 +1,10 @@
 @import "tailwindcss";
 :root{color-scheme:dark}body{margin:0;background:#0c0e11;color:#e5e7eb;font-family:Arial,Helvetica,sans-serif;font-size:14px}*{box-sizing:border-box}button,a{ -webkit-tap-highlight-color:transparent}a{text-decoration:none;color:inherit}.panel{background:#121519;border:1px solid #262b32;border-radius:12px}.muted{color:#919aa8}code{font-family:monospace}::selection{background:#235b48}button{cursor:pointer}
+html[data-theme='light']{color-scheme:light;--color-zinc-50:#09090b;--color-zinc-100:#18181b;--color-zinc-200:#27272a;--color-zinc-300:#3f3f46;--color-zinc-400:#52525b;--color-zinc-500:#71717a;--color-zinc-600:#71717a;--color-zinc-700:#d4d4d8;--color-zinc-800:#e4e4e7;--color-zinc-900:#f4f4f5;--color-zinc-950:#fafafa;--color-emerald-300:#047857;--color-emerald-400:#059669;--color-amber-200:#92400e;--color-amber-300:#b45309}
+html[data-theme='light'] body{background:#fafafa;color:#18181b}
+html[data-theme='light'] .panel{background:#fff;border-color:#e4e4e7}
+html[data-theme='light'] [class*='bg-[#']{background-color:#f4f4f5}
+html[data-theme='light'] .muted{color:#71717a}
+html[data-theme='light'] .hover\:text-white:hover{color:#18181b}
+html[data-theme='light'] .hover\:bg-white:hover{background:#27272a}
+html[data-theme='light'] .recharts-default-tooltip{background:#fff!important;border-color:#d4d4d8!important;color:#18181b!important}

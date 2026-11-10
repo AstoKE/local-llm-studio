@@ -1,0 +1,19 @@
+[Unit]
+Description=Local LLM Studio API
+After=network.target
+
+[Service]
+Type=simple
+# Adjust the two project paths if installed elsewhere.
+WorkingDirectory=%h/code/local-llm-studio
+ExecStart=%h/code/local-llm-studio/scripts/backend.sh
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/code/local-llm-studio/data
+
+[Install]
+WantedBy=default.target

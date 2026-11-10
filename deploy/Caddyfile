@@ -1,0 +1,13 @@
+# Set STUDIO_LAN_ADDRESS (DNS hostname) and STUDIO_LAN_IP (private workstation IP).
+# Install/trust Caddy's local CA on each client. Never use port-forwarding.
+{
+    auto_https disable_redirects
+}
+https://{$STUDIO_LAN_ADDRESS} {
+    bind {$STUDIO_LAN_IP}
+    tls internal
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3000 {
+        flush_interval -1
+    }
+}

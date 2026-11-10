@@ -1,7 +1,9 @@
+from contextlib import aclosing
 import uuid
+from backend.services import runtime
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
-from fastapi.responses import StreamingResponse
+from backend.services.streaming import ManagedStreamingResponse
 from sqlalchemy import delete, select
 from backend.core.security import administrator, same_origin
 from backend.database.session import SessionLocal
@@ -62,6 +64,8 @@ async def remove(conversation_id: int):
 
 @router.post('/chat')
 async def chat(body: ChatInput, request: Request):
+    if runtime.benchmark_active or runtime.model_operations:
+        raise HTTPException(409, 'Inference is reserved for an active benchmark or model operation.')
     if body.conversation_id in active_conversations:
         raise HTTPException(409, 'This conversation is already generating.')
     history = prepare_chat(body)
@@ -69,7 +73,11 @@ async def chat(body: ChatInput, request: Request):
     active_jobs.add(job)
     if body.conversation_id is not None:
         active_conversations.add(body.conversation_id)
-    return StreamingResponse(generate(request.app.state.provider, body, history, job), media_type='application/x-ndjson', headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
+    def release():
+        active_jobs.discard(job)
+        if body.conversation_id is not None:
+            active_conversations.discard(body.conversation_id)
+    return ManagedStreamingResponse(generate(request.app.state.provider, body, history, job), on_close=release, media_type='application/x-ndjson', headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
 
 @router.get('/presets')
 async def presets():
@@ -97,15 +105,24 @@ async def metadata(request: Request, model: str = Query(min_length=1, max_length
 
 @router.post('/models/{operation}', dependencies=[Depends(administrator)])
 async def model_operation(operation: Literal['pull', 'delete', 'load', 'unload'], body: ModelInput, request: Request):
+    if runtime.benchmark_active or active_jobs or runtime.model_operations:
+        raise HTTPException(409, 'Wait for active inference or model operations to finish.')
+    runtime.model_operations.add(body.model)
     if operation != 'pull':
-        return await request.app.state.provider.operation(operation, body.model)
+        try:
+            return await request.app.state.provider.operation(operation, body.model)
+        finally:
+            runtime.model_operations.discard(body.model)
     async def download():
         try:
-            async for chunk in request.app.state.provider.pull(body.model):
-                yield event(chunk)
+            async with aclosing(request.app.state.provider.pull(body.model)) as upstream:
+                async for chunk in upstream:
+                    yield event(chunk)
         except ProviderUnavailable as exc:
             yield event({'error': str(exc)})
-    return StreamingResponse(download(), media_type='application/x-ndjson', headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
+        finally:
+            runtime.model_operations.discard(body.model)
+    return ManagedStreamingResponse(download(), on_close=lambda:runtime.model_operations.discard(body.model), media_type='application/x-ndjson', headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
 
 @router.post('/conversation-snapshots', status_code=201)
 async def save_snapshot(body: 'ConversationSnapshot'):

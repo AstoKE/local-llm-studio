@@ -10,11 +10,11 @@ Ollama is optional for viewing the interface: a stopped service produces an offl
 
 ## Local deployment
 
-Run migrations with `mkdir -p data && .venv/bin/alembic upgrade head`, then `./scripts/backend.sh`. For a production frontend, run `npm run build` and `npm start` in `apps/web`. Use a service manager to supervise each process, with the repository as backend WorkingDirectory. Optional Docker Compose packaging is deferred.
+Run migrations with `mkdir -p data && .venv/bin/alembic upgrade head`, then `./scripts/backend.sh`. For a production frontend, run `npm run build` and `npm start` in `apps/web`. Use a service manager to supervise each process, with the repository as backend WorkingDirectory. Native production/user-service and optional Linux Compose instructions are in DEPLOYMENT.md.
 
 ## LAN access
 
-LAN mode is deliberately not enabled in Phase 1. Do not change the Next.js binding to `0.0.0.0`: its API proxy would bypass the preliminary backend remote-IP check. Phase 4 must supply authenticated proxy/session setup, TLS and administrator authorization before remote device access is supported. Never forward ports to the internet or expose Ollama. Until then, use a trusted SSH tunnel to the localhost frontend if remote access is necessary.
+Optional authenticated LAN mode now uses an HTTPS gateway, scrypt administrator login and expiring server-side sessions. Follow [LAN_ACCESS.md](LAN_ACCESS.md). Both app processes and Ollama stay on localhost. Do not bind the development server to a public address.
 
 ## Troubleshooting
 
@@ -42,3 +42,15 @@ Sampling runs while FastAPI is running, independent of browser tabs. Defaults: S
 GPU fields can be partially unavailable. nvidia-smi needs a working NVIDIA driver. AMD sysfs counters require driver/read permissions and may expose a limited device memory pool; they must not be interpreted as total shared system memory or inference allocation. Intel utilization is unavailable unless its kernel interface exposes a readable supported field. No driver installation or GPU configuration is changed by the app.
 
 If Monitoring reports stale samples or storage errors, inspect backend logs, disk space and migration revision (`.venv/bin/alembic current`, expected 0002). A pause in the browser does not stop recording. No new runtime dependencies are needed for Phase 3.
+
+## Phase 4 update
+
+No new dependencies or schema revision are required. Restart the backend and frontend; local startup scripts continue working. Open Benchmarks to run sequential configurations with warm-ups/repeats. Generate an administrator hash using scripts/password_hash.py for password login, or use your current API token in Settings to load administration. Connection tests do not save endpoint changes; Save applies validated provider/default settings immediately when idle and persists them for restart.
+
+LAN mode uses `./scripts/backend.sh --lan` and `./scripts/web.sh --lan` after a successful frontend production build. It requires HTTPS STUDIO_WEB_ORIGIN and STUDIO_ADMIN_PASSWORD_HASH; see LAN_ACCESS.md for gateway/certificate/client setup. Localhost mode remains the default. Database compaction and metrics deletion require an idle runtime, and sampling resumes after cleanup. Benchmark history persists independently of monitoring cleanup.
+
+## Phase 5 verification
+
+Restart the app after updates; there is no new schema beyond 0002. Run scripts/verify.sh on the host, then the real-service smoke command in TESTING.md. scripts/web.sh --production starts the built frontend while retaining localhost binding. Security checks now reject unconfigured Host names and request bodies above STUDIO_MAX_REQUEST_BYTES (default 2 MiB); custom hostnames must match STUDIO_WEB_ORIGIN.
+
+See DEPLOYMENT.md for optional Docker/user-service examples, SECURITY.md for reviewed boundaries and RELEASE_CHECKLIST.md for honest acceptance status. The agent did not enable services, change firewall rules or expose any port.

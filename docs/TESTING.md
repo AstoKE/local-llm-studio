@@ -1,95 +1,71 @@
-# Verification
+# Testing and verification
 
-## Results in development environment (2026-11-05)
+The current acceptance record is [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md). Automated fixtures do not verify real inference, GPU acceleration, TLS or production browser behavior.
 
-- PASS: `python3 -m unittest discover -s backend/tests -p test_provider.py -v` — 3 tests, protocol paths/metadata preservation, HTTP failures, invalid JSON and connection failures, using httpx MockTransport. These are unit tests, not real inference verification.
-- PASS: `python3 -m compileall -q backend`.
-- PASS: live `system_snapshot()` check — nonzero RAM total and CPU percentage in range; returned 16 logical CPUs, 15,961,358,336 bytes total RAM and GPU null.
-- OBSERVED: AMD Ryzen 7 7735HS with Radeon Graphics; Python 3.13.11, Node 24.22.1, npm 11.19.1.
-- OBSERVED: Ollama executable reports client 0.40.3, service not running. HTTP connection to localhost:11434 refused.
-- OBSERVED: nvidia-smi exists but cannot communicate with NVIDIA driver. Actual GPU utilization/VRAM have not been verified. DRM device nodes alone do not prove working inference acceleration.
-- BLOCKED: Python dependencies failed DNS resolution. Cached dependencies insufficient (SQLAlchemy/Alembic absent). Migration and backend API integration remain unverified.
-- BLOCKED: npm dependency installation cannot reach registry; offline install lacks Radix cache. Frontend typecheck reports `tsc: not found`; build reports `next: not found`. No frontend build or browser verification claimed. No dependency lockfiles generated.
-- NOT VERIFIED: real model inference, model loading, downloads, token statistics, benchmark measurements, GPU acceleration and remote-device authentication. Most are later-phase features.
+## Available automated checks
 
-## Repeatable checks after dependency installation
+From repository root, after dependency installation:
 
-From repository root:
+```bash
+./scripts/verify.sh
+```
+
+The runner executes 34 backend tests, migration preservation/ORM drift/integrity checks, 13 frontend helper tests, TypeScript, shell syntax and production build. It does not suppress failures. --skip-build is available for constrained development only and prints an explicit skip; it is not release acceptance.
+
+Individual commands:
 
 ```bash
 .venv/bin/python -m unittest discover -s backend/tests -v
-.venv/bin/python -m compileall -q backend
-mkdir -p data
-.venv/bin/alembic upgrade head
-.venv/bin/alembic current
-./scripts/backend.sh
+.venv/bin/python scripts/check_migrations.py
+npm test --prefix apps/web
+npm run typecheck --prefix apps/web
+npm run build --prefix apps/web
 ```
 
-In another terminal:
+Backend tests use temporary SQLite and deterministic httpx providers, never the user's database or an automatic model download. I/O dispatch is executed inline by a test wrapper because this sandbox can stall thread-to-event-loop wakeups/shutdown; real background runtime integration still needs host checks. The migration script separately tests upgrade/downgrade with existing chat data, ORM agreement and SQLite integrity.
+
+Coverage includes saved/transient chat, edits/regeneration, presets/defaults, failed/interrupted/early-disconnected streams, admission release, benchmark sequencing/warm-up exclusion/cancellation/recovery, metrics retention/downsampling, GPU fallback parsing, administrator session expiry/revocation/credential rotation, login limits, Origin/Host checks and bounded declared/chunked requests. Frontend tests cover UTF-8/NDJSON framing/errors, selection despite failed/delayed preferences, GPU identity/null values, benchmark comparison exclusion/means and host/LAN-mode parsing.
+
+## Browser fixture suite
+
+Five scenarios run on Chromium desktop and mobile configurations: Chat/Playground four-model selection despite preference failure, fixed-height chat with internal scroll/right sidebar, explicit Playground saving, and missing GPU/empty monitoring states. Runtime page errors and React hydration/hook console errors fail tests. All /api routes are browser fixtures; no user conversations, runtime models or database are touched. This verifies UI behavior only, not actual streaming timings or the Next.js-to-backend security boundary.
+
+The browser runner is isolated under tests/browser so production dependency locks are unchanged:
 
 ```bash
-curl --fail http://127.0.0.1:8000/api/health
-curl --fail http://127.0.0.1:8000/api/dashboard
-cd apps/web
-npm run typecheck
-npm run build
-npm start
+npm install --prefix tests/browser
+npm run install-browser --prefix tests/browser
+npm run build --prefix apps/web
+npm test --prefix tests/browser
 ```
 
-API integration test uses an isolated temporary database, actual Alembic migration and an intentionally unreachable provider. Verify connected-provider paths separately with a running Ollama service and compare `/api/models` against `ollama list` and loaded models against `ollama ps`.
+It starts an isolated production frontend on localhost:3005, without reusing a running server. Port 3005 must be free. A successful production build is required before starting it. Reports/traces/screenshots are gitignored. The optional Playwright package could not be installed from the agent's offline cache, so these tests were syntax-parsed but **not executed**. After installing on the host, review/commit its generated package-lock.json to capture the resolved test dependencies.
 
-Browser acceptance: all seven routes, narrow viewport navigation, refresh, offline banner, backend failure state, no-model empty state, real model metadata and session chart accumulation. Inspect browser console and ensure no external requests or exposed secrets. This manual frontend check has not yet run. Automated frontend tests are still required in Phase 5.
+## Real HTTP/inference smoke
 
-Do not progress beyond Phase 1 acceptance until its blocked checks pass. Freeze resolved dependencies, review security advisories and commit lockfiles before production deployment.
+Start normal backend/frontend and Ollama, then:
 
-## Phase 2 verification update (2026-11-05)
+```bash
+.venv/bin/python scripts/smoke.py
+.venv/bin/python scripts/smoke.py --inference --benchmark --model '<installed-model-id>'
+```
 
-Dependencies were subsequently installed by the user. Current results supersede initial dependency-blocked results above:
+The default is read-only health/frontend/provider discovery. Explicit inference tests a real transient chat and saves only its monitoring metadata. Explicit benchmark runs one short repetition and saves its definition/results. Select a real installed model; no model name is hardcoded and no download/deletion/unload is performed. Generated content and secrets are not printed. In LAN mode set STUDIO_SMOKE_ADMIN_TOKEN through environment and use HTTPS URLs; --ca-file accepts a trusted local CA. Certificate checking is never disabled. On interrupted benchmark smoke, cancellation is attempted.
 
-- PASS: `.venv/bin/alembic upgrade head` and `.venv/bin/alembic current` — revision 0001.
-- PASS: `npm run typecheck` in apps/web.
-- PASS: nine backend tests via `.venv/bin/python -m unittest discover -s backend/tests -v`. Isolated temporary SQLite with ASGITransport; deterministic httpx fixtures, not actual inference. Covers conversation CRUD/history, edit/regenerate, presets, model defaults, explicit snapshots, Playground isolation, partial/disconnected and incomplete streams, job cleanup, administrator authorization, cross-origin rejection and unsupported parameter rejection.
-- PASS: three frontend transport tests via `npm test` in apps/web (Node 24). Run without test-process isolation because sandbox child-process behavior can otherwise report only the wrapper file. Covers split UTF-8/NDJSON, authorization/error handling and reader cancellation.
-- PASS: Python source compilation.
-- BLOCKED: production build fails at child-process invocation of `tsc --showConfig`. A direct Node spawnSync reproduction returns EPERM; directly running TypeScript works. No successful production build is claimed. Run `npm run build` on the host.
-- UNAVAILABLE from this sandbox: localhost backend and Ollama HTTP services. User reports backend/frontend startup works on host. No real model, GPU or browser end-to-end verification is claimed.
+The agent's smoke attempt failed with a socket permission error; prior curl attempts could not reach localhost backend/Ollama. This does not mean the user's services are stopped. Previously supplied real chat screenshots are user-provided evidence, not a new phase-5 inference test.
 
-### Required host acceptance for Phase 2
+## Host/manual acceptance
 
-1. Start Ollama, backend and frontend. Check health and model listing; run `npm run typecheck`, `npm test` and `npm run build`.
-2. Configure STUDIO_ADMIN_TOKEN, restart backend. Confirm missing/wrong token blocks mutations. Download a chosen model and inspect progress, metadata and loaded state. Test load/unload/delete only with a model you intend to modify.
-3. Chat: verify incremental text, stop while generating, reload saved conversation, rename/search/delete, edit an earlier prompt, regenerate. Confirm the model receives the intended history.
-4. Save/load a preset and per-model defaults. Ensure invalid/unsupported options return 422. Observe actual model memory limits for context size.
-5. Playground: generate without a saved conversation; explicitly save it and open it in Chat. Inspect code rendering, narrow viewport and console errors.
-6. Stop Ollama during a response; verify error state, retained partial text and released active-job count. Confirm future history excludes failed assistant output.
-7. Keep localhost binding. LAN/RBAC acceptance remains a later phase.
+1. Restart backend/frontend, confirm health phase 5 and schema 0002. Existing chats should remain intact. Try all seven routes and browser console on narrow/desktop viewports.
+2. Verify Chat streams incrementally, stop releases runtime, edit truncates history, regenerate replaces the response and reload restores messages/settings. Repeat in Playground and confirm persistence only when explicitly saved.
+3. Confirm model discovery/download/load/unload/deletion using a model you intend to modify. Missing/wrong credentials must block mutations; missing provider fields must stay unknown.
+4. Compare monitoring with host tools. Close browser and confirm sampling continues, then restart and confirm history remains. Inspect actual provider token/duration values and application TTFT labeling. GPU sysfs/device memory is not model allocation.
+5. Run a two-configuration benchmark with one warm-up and two measured repetitions: six executions total, four measured. Check contention rejection, cancellation, failure/restart recovery and means excluding warm-ups. Avoid external Ollama workloads.
+6. Verify Settings/defaults/theme, authorized idle maintenance and preserved chats/benchmark results. Exercise session expiry, password rotation and logout.
+7. Complete production, container/user-service and second-device TLS checks in DEPLOYMENT.md/LAN_ACCESS.md. Obtain a current dependency advisory scan on a network-capable host; an offline audit zero is not a security certification.
 
-No real model downloads, deletions or loads were performed automatically in this environment. The developer did not create the Phase 1 commit because .git is read-only to the agent; commit 0cfe0fe (Phase 1) became visible during work.
+Actual driver availability, background executor behavior, production proxy, Caddy trust and container/service runtime remain distinct acceptance items. See SECURITY.md for scope and limitations.
 
-### Chat hot-reload and send fixes
+## Native LAN deployment generation
 
-Frontend hot updates now remount ChatWorkspace (`@refresh reset`) when its hook structure changes. Sending errors survive the subsequent conversation reload; missing-model state has a retry action, waiting responses have a status, Enter submits and Shift+Enter inserts a newline. Browser acceptance still needs a host check.
-
-Origin checks accept localhost/127.0.0.1/IPv6 loopback aliases only on the configured scheme and port; other hosts/ports and cross-site requests stay denied. Eleven backend tests pass, including a browser-origin conversation-create/chat flow with localhost and propagation of an actual provider error fixture. TypeScript and three frontend transport tests pass. These remain fixture-based tests, not live Ollama/browser verification. Restart FastAPI after this update and fully reload the frontend to clear stale development hook state.
-
-## Phase 3 verification (2026-11-05)
-
-- PASS: 18 backend tests, including monitoring history/model filtering, pagination bounds, Chat/Playground performance persistence without prompt content, actual-point downsampling preserving first/last values, retention cutoff, provider-rate calculation and unknown/zero handling, CPU-only/permission fallback, multiple NVIDIA devices with partial readings, AMD/Intel fixture fields and GPU timeout cleanup.
-- PASS: five frontend tests, including stable GPU identity/nullable history series and measurement unit/unknown formatting.
-- PASS: strict TypeScript check and Python compilation.
-- PASS: isolated Alembic 0001 → 0002 → 0001 → 0002 round trip with an existing conversation/message retained. Production database was not modified by this check.
-- PASS: direct hardware reads: CPU 11.9% at test instant, 16 logical CPUs, RAM total 15,961,358,336 bytes. AMD PCI 0000:35:00.0 exposed gpu_busy_percent=98 and mem_info_vram_used≈448.6 MiB / total 512 MiB at that instant. These are whole-device kernel fields, not proof of inference acceleration. NVIDIA PCI 0000:01:00.0 was enumerated through sysfs but exposed no usage/memory fields.
-- UNAVAILABLE: nvidia-smi could not communicate with its driver; localhost Ollama HTTP connection refused from sandbox. Actual NVIDIA utilization/VRAM and newly recorded statistics from live inference remain unverified.
-- BLOCKED: Next.js production build still fails at spawning tsc --showConfig; this sandbox's Node spawnSync returns EPERM. TypeScript itself runs successfully. No production-build success is claimed.
-- NOT VERIFIED: browser rendering/interactions for the new Monitoring page; actual background sampler behavior on the user's host. The user previously supplied a working real-model chat screenshot; that is user-provided evidence, not an agent inference test.
-
-Fixture tests execute blocking I/O inline via a patched asyncio.to_thread because this sandbox can stall thread-to-event-loop wakeups/executor shutdown. This validates database queries/sampling orchestration without claiming real thread-runtime integration. GPU parser, subprocess and sysfs fixture tests are not hardware verification.
-
-### Phase 3 host acceptance
-
-1. Stop/restart backend with scripts/backend.sh. Confirm Alembic revision 0002, previous chats intact and /api/health reports phase 3.
-2. Open Monitoring: CPU/RAM and timestamp should update; compare with a system utility. Close the browser for a minute, reopen and confirm history continued. Restart backend and confirm history remains.
-3. Generate one Chat and one Playground reply. Check model/source, output/prompt tokens, timing detail and throughput against the actual Ollama final response. Confirm application TTFT is labeled separately. Try interrupted/failed generation: absent counters must remain unknown.
-4. Exercise model/time filters, older/newer pages, pause/resume, GPU selection and narrow layout. Check chart units and that missing device readings are not drawn as zero. Watch browser console.
-5. Verify background sampler shutdown on Ctrl+C, and that no duplicate sampler runs are created (use one worker). Inspect logs for storage errors. Perform real NVIDIA validation only with its driver available.
-6. Run backend/frontend tests and npm run build on the host. Keep Phase 4 pending until these acceptance checks pass.
+Six additional tests verify private-IP/unprivileged-port validation, localhost service routing, captured Node PATH, preservation of existing .env secrets/database settings, staging without host changes, dependency failure before mutation, private file modes and symlink/control-character rejection. No test installs services or changes the OS trust store. The user later reported that host verification, real-model flows and manual browser use passed. Native service activation and actual second-PC HTTPS testing remain pending; see LAN_QUICKSTART.md.

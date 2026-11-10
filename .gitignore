@@ -6,3 +6,8 @@ data/
 node_modules/
 .next/
 *.tsbuildinfo
+
+artifacts/
+**/playwright-report/
+**/test-results/
+/deploy/generated/

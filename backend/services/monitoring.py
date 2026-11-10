@@ -44,6 +44,7 @@ def run_dict(row: InferenceRun) -> dict:
 
 class MetricsSampler:
     def __init__(self) -> None:
+        self.storage_lock = asyncio.Lock()
         self.latest: dict | None = None
         self.error: str | None = None
 
@@ -53,7 +54,8 @@ class MetricsSampler:
         snapshot['active_jobs'] = len(active_jobs)
         self.latest = snapshot
         try:
-            await asyncio.to_thread(save_sample, snapshot)
+            async with self.storage_lock:
+                await asyncio.to_thread(save_sample, snapshot)
             self.error = None
         except Exception:
             self.error = 'Performance history could not be saved. Check migrations, disk space and backend logs.'

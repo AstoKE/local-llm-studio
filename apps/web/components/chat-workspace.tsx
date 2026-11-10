@@ -1,34 +1,59 @@
 // @refresh reset
 'use client';
 import {useEffect,useRef,useState} from 'react';
-import {ArrowUp,Check,Copy,PanelLeft,Pencil,RotateCcw,Search,SlidersHorizontal,Sparkles,Square,SquarePen,Trash2,X} from 'lucide-react';
+import {ArrowUp,Check,Copy,PanelLeft,Pencil,RotateCcw,RefreshCw,Search,SlidersHorizontal,Sparkles,Square,SquarePen,Trash2,X} from 'lucide-react';
 import {api,stream} from '@/lib/api';
+import {loadModelCatalog} from '@/lib/model-catalog';
 import {Button} from './ui/button';
 import {Configuration,defaults,InferenceSettings} from './inference-settings';
 import {Markdown} from './markdown';
 type Message={id?:number;role:'user'|'assistant';content:string;statistics?:Record<string,unknown>};
 type Conversation={id:number;title:string;model:string;configuration:Configuration;messages?:Message[]};
 export function ChatWorkspace({playground=false}:{playground?:boolean}){
-const[models,setModels]=useState<{name:string}[]>([]),[model,setModel]=useState(''),[config,setConfig]=useState(defaults),[conversations,setConversations]=useState<Conversation[]>([]),[current,setCurrent]=useState<Conversation|null>(null),[messages,setMessages]=useState<Message[]>([]),[input,setInput]=useState(''),[search,setSearch]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[copied,setCopied]=useState<number|null>(null),[notice,setNotice]=useState(''),[modelsLoading,setModelsLoading]=useState(true),[mobilePanel,setMobilePanel]=useState<'chat'|'conversations'>('chat'),[settingsOpen,setSettingsOpen]=useState(false);const controller=useRef<AbortController|null>(null),messageList=useRef<HTMLDivElement|null>(null),followOutput=useRef(true),settingsToggle=useRef<HTMLButtonElement|null>(null),composer=useRef<HTMLTextAreaElement|null>(null);
+const[models,setModels]=useState<{name:string}[]>([]),[model,setModel]=useState(''),[config,setConfig]=useState(defaults),[conversations,setConversations]=useState<Conversation[]>([]),[current,setCurrent]=useState<Conversation|null>(null),[messages,setMessages]=useState<Message[]>([]),[input,setInput]=useState(''),[search,setSearch]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[copied,setCopied]=useState<number|null>(null),[notice,setNotice]=useState(''),[modelsLoading,setModelsLoading]=useState(true),[mobilePanel,setMobilePanel]=useState<'chat'|'conversations'>('chat'),[settingsOpen,setSettingsOpen]=useState(false);const controller=useRef<AbortController|null>(null),messageList=useRef<HTMLDivElement|null>(null),followOutput=useRef(true),settingsToggle=useRef<HTMLButtonElement|null>(null),composer=useRef<HTMLTextAreaElement|null>(null),catalogVersion=useRef(0),selectionVersion=useRef(0),applicationDefaults=useRef<Configuration>(defaults());
 useEffect(()=>{const textarea=composer.current;if(textarea){textarea.style.height='auto';textarea.style.height=`${Math.min(textarea.scrollHeight,160)}px`}},[input]);
 async function list(){setConversations(await api('/conversations'))}
-async function loadModels(){setModelsLoading(true);try{const r=await api<{models:{name:string}[]}>('/models');setModels(r.models);await chooseModel(r.models[0]?.name??'')}catch(e){setError(String(e))}finally{setModelsLoading(false)}}
-useEffect(()=>{void loadModels();if(!playground)void list().catch(e=>setError(String(e)));return()=>controller.current?.abort()},[playground]);
+async function loadModels(){
+ const request=++catalogVersion.current,selection=selectionVersion.current;
+ setModelsLoading(true);setError('');setNotice('');
+ try{
+  const result=await loadModelCatalog(installed=>{
+   if(request!==catalogVersion.current)return;
+   setModels(installed);setModelsLoading(false);
+   if(selection===selectionVersion.current)setModel(installed.some(m=>m.name===model)?model:installed[0]?.name??'');
+  });
+  if(request!==catalogVersion.current)return;
+  if(result.value)applicationDefaults.current=result.value.configuration;
+  if(result.warning)setNotice(result.warning);
+  if(selection===selectionVersion.current){
+   const selected=result.models.some(m=>m.name===model)?model:result.models.some(m=>m.name===result.value?.default_model)?result.value!.default_model:result.models[0]?.name??'';
+   await chooseModel(selected);
+  }
+ }catch(e){if(request===catalogVersion.current)setError(String(e))}
+ finally{if(request===catalogVersion.current)setModelsLoading(false)}
+}
+useEffect(()=>{void loadModels();if(!playground)void list().catch(e=>setError(String(e)));return()=>{catalogVersion.current++;selectionVersion.current++;controller.current?.abort()}},[playground]);
 useEffect(()=>{const list=messageList.current;if(list&&followOutput.current)list.scrollTop=list.scrollHeight},[messages,mobilePanel]);
-async function open(c:Conversation,clearError=true){try{const full=await api<Conversation>(`/conversations/${c.id}`);setCurrent(full);setModel(full.model);setConfig(full.configuration);followOutput.current=true;setMobilePanel('chat');setMessages(full.messages??[]);if(clearError)setError('')}catch(e){setError(String(e))}}
-async function send(content=input,regenerate=false,edit?:number){if(busy||!model)return;followOutput.current=true;setBusy(true);setError('');const abort=new AbortController();controller.current=abort;let conversation=current;try{if(!playground&&!conversation){conversation=await api<Conversation>('/conversations',{method:'POST',body:JSON.stringify({title:content.slice(0,80)||'New conversation',model,configuration:config})});setCurrent(conversation);await list()}
+async function open(c:Conversation,clearError=true){selectionVersion.current++;try{const full=await api<Conversation>(`/conversations/${c.id}`);setCurrent(full);setModel(full.model);setConfig(full.configuration);followOutput.current=true;setMobilePanel('chat');setMessages(full.messages??[]);if(clearError)setError('')}catch(e){setError(String(e))}}
+async function send(content=input,regenerate=false,edit?:number){if(busy||!model)return;selectionVersion.current++;followOutput.current=true;setBusy(true);setError('');const abort=new AbortController();controller.current=abort;let conversation=current;try{if(!playground&&!conversation){conversation=await api<Conversation>('/conversations',{method:'POST',body:JSON.stringify({title:content.slice(0,80)||'New conversation',model,configuration:config})});setCurrent(conversation);await list()}
 let history=messages;if(edit!==undefined){const index=messages.findIndex(m=>m.id===edit);history=messages.slice(0,index)}else if(regenerate&&history.at(-1)?.role==='assistant')history=history.slice(0,-1);
 setMessages([...history,...(!regenerate?[{role:'user' as const,content}]:[]),{role:'assistant',content:''}]);setInput('');
 await stream('/chat',{model,content:playground&&regenerate?(history.at(-1)?.content??''):content,configuration:config,conversation_id:conversation?.id??null,regenerate:playground?false:regenerate,edit_message_id:edit??null,history:playground?(regenerate?history.slice(0,-1):history).map(({role,content})=>({role,content})):[]},abort.signal,event=>{if(event.type==='error')throw Error(String(event.detail));if(event.type==='token')setMessages(old=>old.map((m,i)=>i===old.length-1?{...m,content:m.content+String(event.content)}:m));if(event.type==='done')setMessages(old=>old.map((m,i)=>i===old.length-1?{...m,statistics:event.statistics as Record<string,unknown>}:m))});
 }catch(e){if(!(e instanceof DOMException&&e.name==='AbortError'))setError(String(e))}finally{controller.current=null;if(conversation)await open(conversation,false);setBusy(false)}}
-async function chooseModel(name:string){setModel(name);try{const saved=await api<Configuration|null>(`/model-preferences?model=${encodeURIComponent(name)}`);if(saved)setConfig(saved)}catch(e){setError(String(e))}}
+async function chooseModel(name:string){
+ const selection=++selectionVersion.current;
+ setModel(name);setConfig(structuredClone(applicationDefaults.current));
+ if(!name)return;
+ try{const saved=await api<Configuration|null>(`/model-preferences?model=${encodeURIComponent(name)}`);if(selection===selectionVersion.current&&saved)setConfig(saved)}
+ catch(e){if(selection===selectionVersion.current)setNotice(`Model selected. Saved model settings could not be loaded: ${String(e)}`)}
+}
 async function saveDefaults(){try{await api(`/model-preferences?model=${encodeURIComponent(model)}`,{method:'PUT',body:JSON.stringify(config)});setNotice('Model defaults saved.')}catch(e){setError(String(e))}}
 async function snapshot(){try{await api('/conversation-snapshots',{method:'POST',body:JSON.stringify({title:messages.find(m=>m.role==='user')?.content.slice(0,80)||'Playground session',model,configuration:config,messages:messages.map(({role,content})=>({role,content}))})});setNotice('Session saved. Open Chat to continue.')}catch(e){setError(String(e))}}
 async function rename(){if(!current)return;const title=window.prompt('Conversation title',current.title);if(!title?.trim())return;try{const c=await api<Conversation>(`/conversations/${current.id}`,{method:'PUT',body:JSON.stringify({title,model,configuration:config})});setCurrent(c);await list()}catch(e){setError(String(e))}}
 async function remove(){if(!current||!window.confirm('Delete this conversation and all messages?'))return;try{await api(`/conversations/${current.id}`,{method:'DELETE'});setCurrent(null);setMessages([]);await list()}catch(e){setError(String(e))}}
 return <div className="relative flex min-h-0 flex-1 overflow-hidden">
   {!playground&&<aside className={`min-h-0 w-full shrink-0 flex-col border-r border-zinc-800/70 bg-[#101216] p-3 lg:w-56 ${settingsOpen?'hidden xl:flex':mobilePanel==='conversations'?'flex lg:flex':'hidden lg:flex'}`}>
-    <button disabled={busy} onClick={()=>{setCurrent(null);setMessages([]);setConfig(defaults());setError('');setNotice('');setMobilePanel('chat')}} className="mb-5 flex items-center gap-3 rounded-xl px-3 py-3 text-sm text-zinc-200 transition hover:bg-zinc-800"><SquarePen size={17}/>New chat</button>
+    <button disabled={busy} onClick={()=>{setCurrent(null);setMessages([]);setError('');setNotice('');setMobilePanel('chat');void loadModels()}} className="mb-5 flex items-center gap-3 rounded-xl px-3 py-3 text-sm text-zinc-200 transition hover:bg-zinc-800"><SquarePen size={17}/>New chat</button>
     <div className="relative mb-6"><Search size={14} className="absolute left-3 top-3 text-zinc-500"/><input aria-label="Search conversations" placeholder="Search chats" value={search} onChange={e=>setSearch(e.target.value)} className="w-full rounded-xl bg-zinc-900 py-2.5 pl-9 pr-3 text-xs outline-none focus:ring-1 focus:ring-zinc-600"/></div>
     <p className="mb-3 px-3 text-[11px] font-medium text-zinc-500">Your chats</p>
     <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain">{conversations.filter(c=>c.title.toLowerCase().includes(search.toLowerCase())).map(c=><button key={c.id} disabled={busy} onClick={()=>void open(c)} className={`block w-full truncate rounded-xl px-3 py-2.5 text-left text-sm transition ${current?.id===c.id?'bg-zinc-800 text-zinc-100':'text-zinc-400 hover:bg-zinc-800/60'}`}>{c.title}</button>)}{!conversations.length&&<p className="px-3 text-xs leading-5 text-zinc-600">Your conversations will appear here.</p>}</div>
@@ -36,7 +61,7 @@ return <div className="relative flex min-h-0 flex-1 overflow-hidden">
   </aside>}
   <section className={`min-h-0 min-w-0 flex-1 flex-col ${settingsOpen?'hidden xl:flex':mobilePanel==='chat'||playground?'flex lg:flex':'hidden lg:flex'}`}>
     <div className="flex min-h-16 shrink-0 items-center justify-between gap-3 px-4 md:px-6">
-      <div className="flex min-w-0 items-center gap-2">{!playground&&<button aria-label="Show conversations" onClick={()=>setMobilePanel('conversations')} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 lg:hidden"><PanelLeft size={19}/></button>}<select aria-label="Model" disabled={busy} value={model} onChange={e=>void chooseModel(e.target.value)} className="min-w-0 max-w-[240px] rounded-lg bg-transparent px-2 py-2 text-base font-medium text-zinc-200 outline-none hover:bg-zinc-800/60 focus-visible:ring-1 focus-visible:ring-zinc-500"><option value="">Select a model</option>{models.map(m=><option key={m.name} className="bg-zinc-900">{m.name}</option>)}</select><span title="Inference runs on your workstation" className="hidden rounded-md border border-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500 sm:inline">Local</span></div>
+      <div className="flex min-w-0 items-center gap-2">{!playground&&<button aria-label="Show conversations" onClick={()=>setMobilePanel('conversations')} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 lg:hidden"><PanelLeft size={19}/></button>}<select aria-label="Model" disabled={busy} value={model} onChange={e=>void chooseModel(e.target.value)} className="min-w-0 max-w-[240px] rounded-lg bg-transparent px-2 py-2 text-base font-medium text-zinc-200 outline-none hover:bg-zinc-800/60 focus-visible:ring-1 focus-visible:ring-zinc-500"><option value="">Select a model</option>{models.map(m=><option key={m.name} value={m.name} className="bg-zinc-900">{m.name}</option>)}</select><button type="button" aria-label="Refresh installed models" title={`${models.length} installed models · Refresh list`} disabled={busy||modelsLoading} onClick={()=>void loadModels()} className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-800 disabled:opacity-40"><RefreshCw size={14} className={modelsLoading?'animate-spin':''}/></button><span title="Inference runs on your workstation" className="hidden rounded-md border border-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500 sm:inline">Local</span></div>
       <div className="flex items-center gap-1">{current&&<><button aria-label="Rename conversation" title="Rename conversation" disabled={busy} onClick={()=>void rename()} className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"><Pencil size={15}/></button><button aria-label="Delete conversation" title="Delete conversation" disabled={busy} onClick={()=>void remove()} className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-800 hover:text-red-300"><Trash2 size={15}/></button></>}{playground&&<button disabled={busy||!messages.length} onClick={()=>void snapshot()} className="rounded-lg px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800">Save chat</button>}<button ref={settingsToggle} aria-label={settingsOpen?"Close inference settings":"Open inference settings"} aria-expanded={settingsOpen} aria-controls="inference-settings-panel" title="Inference settings" onClick={()=>setSettingsOpen(open=>!open)} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"><SlidersHorizontal size={18}/></button></div>
     </div>
     <div ref={messageList} role="log" aria-label="Conversation messages" onScroll={e=>{const list=e.currentTarget;followOutput.current=list.scrollHeight-list.scrollTop-list.clientHeight<80}} className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-wrap:anywhere]">

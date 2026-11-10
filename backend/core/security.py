@@ -2,13 +2,18 @@ import hmac
 from fastapi import HTTPException, Request
 from backend.core.config import settings
 
-async def administrator(request: Request) -> None:
+def is_admin(request: Request) -> bool:
+    from backend.services.auth import COOKIE, session_valid
     token = settings().admin_token
-    if len(token) < 32:
-        raise HTTPException(403, 'Set STUDIO_ADMIN_TOKEN to a random secret of at least 32 characters and restart the backend.')
     supplied = request.headers.get('authorization', '')
-    if not hmac.compare_digest(supplied, f'Bearer {token}'):
-        raise HTTPException(401, 'Administrator token required.')
+    bearer = len(token) >= 32 and hmac.compare_digest(supplied.encode(), f'Bearer {token}'.encode())
+    return bearer or session_valid(request.cookies.get(COOKIE))
+
+async def administrator(request: Request) -> None:
+    if not is_admin(request):
+        if len(settings().admin_token) < 32 and not settings().admin_password_hash:
+            raise HTTPException(403, 'Configure an administrator password hash or STUDIO_ADMIN_TOKEN first.')
+        raise HTTPException(401, 'Administrator authentication required.')
 
 def allowed_origin(origin: str, configured: str) -> bool:
     """Allow only the configured origin, with loopback hostname aliases on its port."""
@@ -33,3 +38,12 @@ async def same_origin(request: Request) -> None:
         raise HTTPException(403, 'Origin is not allowed. Set STUDIO_WEB_ORIGIN to the frontend origin and restart the backend.')
     if request.headers.get('sec-fetch-site') == 'cross-site':
         raise HTTPException(403, 'Cross-site mutation denied.')
+
+def allowed_host(host: str) -> bool:
+    from urllib.parse import urlsplit
+    try:
+        parsed=urlsplit('//'+host)
+        return bool(not parsed.username and not parsed.password and not parsed.path and not parsed.query and not parsed.fragment
+                    and parsed.hostname in {'127.0.0.1','localhost','::1',settings().web_origin.host})
+    except ValueError:
+        return False

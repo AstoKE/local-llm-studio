@@ -40,3 +40,31 @@ minutes: 1–10080. before_id: positive integer. Model filter is an exact match.
 Raw provider duration fields remain nanoseconds. Output throughput = eval_count / (eval_duration / 1e9), unknown if counters are missing or duration is zero. prompt_eval_cached_count is retained when supplied; prompt evaluation duration is shown as returned rather than inventing a prompt throughput estimate. server_ttft_seconds and server_duration_seconds are application monotonic-clock observations. Failed/interrupted attempts need not have final provider counters and are never counted as successful chart throughput.
 
 `system_samples` and `inference_runs` are added by migration 0002. Sampling persists without any frontend request. Host records expire after the configured retention and are capped at 20,000; inference attempts are capped at 10,000. Performance records deliberately survive conversation deletion and contain no message content or system prompt. No pre-existing message history is backfilled. One backend worker remains required.
+
+## Phase 4 benchmarks and administration
+
+| Method | Path | Behavior |
+|---|---|---|
+| GET/POST | /api/benchmarks | Paginated summaries (before_id) / start background job, HTTP 202 with id |
+| GET | /api/benchmarks/{id} | Saved definition, progress, warm-up/measured results and status |
+| POST | /api/benchmarks/{id}/cancel | Cancel active provider stream, retain completed rounds |
+| GET | /api/auth/me | Authentication/role/LAN mode flags; no credentials |
+| POST | /api/auth/login | Password authentication; HttpOnly session cookie |
+| POST | /api/auth/logout | Revoke session and delete cookie |
+| GET/PUT | /api/preferences | Read default model/configuration/theme; PUT updates theme only |
+| GET/PUT | /api/admin/settings | Administrator-only provider URL and default model/configuration |
+| POST | /api/admin/connection-test | Test validated Ollama endpoint without saving |
+| GET | /api/admin/health | Database quick_check/revision/counts, runtime/process information |
+| POST | /api/admin/maintenance | Administrator-only vacuum or clear_metrics, idle runtime required |
+
+Benchmark body: model, name, prompt, configurations (1–8 named configuration objects), warmups (0–3) and repeats (1–10). Configurations execute in input order; warm-ups precede measured repetitions for each configuration. Only one benchmark is admitted, and admission returns 409 while Chat/Playground/model mutations are active. While benchmarking, new application inference/model mutations return 409. Workloads launched directly through Ollama are outside this admission boundary. Close browser tabs without cancelling to let a benchmark continue. Shutdown cancels the active job; recovery marks orphaned running records interrupted.
+
+Each result retains unchanged provider token/duration counters and application-clock first-token/elapsed timings. RAM peak is sampled whole-host memory (250ms), not model allocation; GPU peaks use only background observations timestamped during the run and may be unavailable for short runs. Warm-ups and failed results are excluded from UI comparison means. Definitions/test prompts and results persist in records(kind=benchmark). No generated response text is saved by the benchmark service. Measured attempts also appear in inference monitoring with source=benchmark; warm-ups do not.
+
+LAN mode protects all backend routes except login/me and requires secure cookies over the configured HTTPS origin. Admin endpoints/model mutations also accept the existing Bearer token. Sessions are stored as digests, expire, revoke on logout and invalidate on password-hash rotation. No password hash or API token is returned by settings endpoints. Provider URLs containing credentials/query/fragment are rejected. Preferences use server-side allowlists. The original localhost and Phase 1–3 security descriptions are superseded by docs/LAN_ACCESS.md for optional LAN deployment.
+
+## Phase 5 request and disconnect guards
+
+Health reports phase 5 (application version 0.5.0); schema remains 0002. Unconfigured Host names return HTTP 400 at both frontend proxy and backend. Browser mutation Origin still separately enforces scheme/port. Requests exceeding STUDIO_MAX_REQUEST_BYTES (default 2 MiB, configurable 64 KiB–16 MiB) return HTTP 413 before JSON parsing, including chunked bodies. Unsupported/invalid parameters remain HTTP 422. No CORS wildcard is introduced.
+
+Chat/download resource admission is released even when the client disconnects before response headers or stream iteration starts. If generation never started, there is no invented completion/performance record; an already saved user message can still be retried/regenerated. API responses remain no-store. New verification and deployment tools are documented in TESTING.md and DEPLOYMENT.md.

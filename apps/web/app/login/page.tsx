@@ -1,0 +1,7 @@
+'use client';
+import {useState} from 'react';
+import {useRouter} from 'next/navigation';
+import {LockKeyhole} from 'lucide-react';
+import {api} from '@/lib/api';
+import {Button} from '@/components/ui/button';
+export default function Login(){const[password,setPassword]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);const router=useRouter();return <main className="flex min-h-dvh items-center justify-center p-6"><form className="panel w-full max-w-sm space-y-5 p-8" onSubmit={async e=>{e.preventDefault();setBusy(true);setError('');try{await api('/auth/login',{method:'POST',body:JSON.stringify({password})});setPassword('');router.replace('/');router.refresh()}catch(e){setError(String(e))}finally{setBusy(false)}}}><LockKeyhole className="text-emerald-400"/><h1 className="text-2xl font-semibold">Local LLM Studio</h1><p className="text-sm text-zinc-500">Sign in to your private workstation.</p><label className="block text-xs text-zinc-400">Administrator password<input autoFocus type="password" autoComplete="current-password" required maxLength={256} value={password} onChange={e=>setPassword(e.target.value)} className="mt-2 w-full rounded-lg bg-zinc-800 p-3 text-sm"/></label>{error&&<p role="alert" className="text-sm text-amber-300">{error}</p>}<Button type="submit" disabled={busy||!password} className="w-full">{busy?'Signing in…':'Sign in'}</Button></form></main>}

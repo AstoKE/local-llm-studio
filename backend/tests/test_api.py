@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 _database = tempfile.TemporaryDirectory()
 os.environ['STUDIO_DATABASE_URL'] = f'sqlite:///{_database.name}/test.db'
+os.environ['STUDIO_LAN_MODE'] = 'false'
+os.environ['STUDIO_ADMIN_PASSWORD_HASH'] = ''
 os.environ['STUDIO_WEB_ORIGIN'] = 'http://127.0.0.1:3000'
 os.environ['STUDIO_ADMIN_TOKEN'] = 'test-only-token-with-at-least-32-characters'
 
@@ -15,6 +17,8 @@ from backend.database.session import Base, engine
 from backend.models import entities
 from backend.providers.ollama import OllamaProvider
 from backend.services.chat import active_conversations, active_jobs
+from backend.services.benchmarks import BenchmarkManager
+from backend.services import runtime
 
 class APITests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -37,9 +41,13 @@ class APITests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, json={})
         self.upstream = httpx.AsyncClient(base_url='http://runtime', transport=httpx.MockTransport(handle))
         app.state.provider = OllamaProvider(self.upstream)
+        app.state.benchmarks = BenchmarkManager(app.state.provider)
         self.client = httpx.AsyncClient(base_url='http://127.0.0.1', transport=httpx.ASGITransport(app=app))
 
     async def asyncTearDown(self):
+        await app.state.benchmarks.shutdown()
+        runtime.benchmark_active = False
+        runtime.model_operations.clear()
         await self.client.aclose()
         await self.upstream.aclose()
         active_conversations.clear()
@@ -171,3 +179,229 @@ class APITests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(r['id']<first for r in older['runs']))
         finally:
             del app.state.metrics
+
+    async def test_benchmarks_are_sequential_and_block_other_inference(self):
+        import asyncio
+        from unittest.mock import patch
+        gate = asyncio.Event()
+        order = []
+        async def chat(payload):
+            await gate.wait()
+            order.append(payload['options']['temperature'])
+            yield {'message':{'content':'response'},'done':False}
+            yield {'done':True,'eval_count':8,'eval_duration':2000000000}
+        definition={'model':'fixture','prompt':'benchmark prompt','warmups':1,'repeats':1,'configurations':[
+            {'name':'a','configuration':{'options':{'temperature':0.1}}},
+            {'name':'b','configuration':{'options':{'temperature':0.2}}}]}
+        with patch.object(app.state.provider,'chat',side_effect=chat):
+            response=await self.client.post('/api/benchmarks',json=definition)
+            self.assertEqual(response.status_code,202,response.text)
+            identifier=response.json()['id']
+            self.assertEqual((await self.client.post('/api/benchmarks',json=definition)).status_code,409)
+            self.assertEqual((await self.client.post('/api/chat',json={'model':'fixture','content':'blocked'})).status_code,409)
+            self.assertEqual((await self.client.post('/api/models/load',json={'model':'fixture'},headers={'Authorization':f"Bearer {os.environ['STUDIO_ADMIN_TOKEN']}"})).status_code,409)
+            gate.set()
+            await app.state.benchmarks.task
+        detail=(await self.client.get(f'/api/benchmarks/{identifier}')).json()
+        self.assertEqual(detail['status'],'completed')
+        self.assertEqual(detail['progress'],4)
+        self.assertEqual(order,[0.1,0.1,0.2,0.2])
+        self.assertEqual(sum(not r['warmup'] for r in detail['results']),2)
+        self.assertFalse(runtime.benchmark_active)
+        from sqlalchemy import select
+        from backend.database.session import SessionLocal
+        from backend.models.entities import InferenceRun
+        with SessionLocal() as session:
+            self.assertEqual(len(session.scalars(select(InferenceRun).where(InferenceRun.source=='benchmark')).all()),2)
+
+    async def test_immediate_benchmark_cancellation_and_recovery_release_runtime(self):
+        from backend.schemas.benchmark import BenchmarkInput
+        body=BenchmarkInput(model='fixture',prompt='test',configurations=[{'name':'a','configuration':{}}])
+        identifier=app.state.benchmarks.start(body)
+        await app.state.benchmarks.cancel(identifier)
+        self.assertFalse(runtime.benchmark_active)
+        self.assertEqual((await self.client.get(f'/api/benchmarks/{identifier}')).json()['status'],'cancelled')
+        from backend.database.session import SessionLocal
+        from backend.models.entities import Record
+        with SessionLocal.begin() as session:
+            session.add(Record(kind='benchmark',name='orphan',payload={'status':'running'}))
+        BenchmarkManager.recover()
+        history=(await self.client.get('/api/benchmarks')).json()['items']
+        self.assertEqual(history[0]['status'],'interrupted')
+
+    async def test_admin_settings_persist_without_returning_secrets(self):
+        headers={'Authorization':f"Bearer {os.environ['STUDIO_ADMIN_TOKEN']}"}
+        self.assertEqual((await self.client.get('/api/admin/settings')).status_code,401)
+        body={'ollama_url':'http://127.0.0.1:11434','default_model':'fixture','configuration':{'options':{'temperature':0.4}}}
+        self.assertEqual((await self.client.put('/api/admin/settings',json=body,headers=headers)).status_code,200)
+        prefs=(await self.client.get('/api/preferences')).json()
+        self.assertEqual(prefs['default_model'],'fixture')
+        self.assertEqual(prefs['configuration']['options']['temperature'],0.4)
+        response=await self.client.get('/api/admin/settings',headers=headers)
+        self.assertNotIn('admin_token',response.text)
+        self.assertNotIn('admin_password_hash',response.text)
+        self.assertEqual((await self.client.put('/api/admin/settings',json={**body,'ollama_url':'http://user:secret@localhost:11434'},headers=headers)).status_code,422)
+        active_jobs.add('busy')
+        self.assertEqual((await self.client.post('/api/admin/maintenance',json={'operation':'clear_metrics'},headers=headers)).status_code,409)
+        active_jobs.clear()
+        self.assertEqual((await self.client.post('/api/admin/maintenance',json={'operation':'clear_metrics'},headers=headers)).status_code,200)
+        self.assertEqual((await self.client.put('/api/preferences',json={'theme':'light'})).status_code,200)
+
+    async def test_secure_lan_login_logout_and_session_hash(self):
+        from pydantic import HttpUrl
+        from backend.core.config import settings
+        from backend.services.auth import COOKIE, hash_password
+        from backend.api.auth import failures
+        from backend.database.session import SessionLocal
+        from backend.models.entities import Record
+        from sqlalchemy import select
+        config=settings()
+        old=(config.lan_mode,config.web_origin,config.admin_password_hash)
+        config.lan_mode=True
+        config.web_origin=HttpUrl('https://studio.home.arpa')
+        config.admin_password_hash=hash_password('long-test-password')
+        failures.clear()
+        try:
+            async with httpx.AsyncClient(base_url='https://studio.home.arpa',transport=httpx.ASGITransport(app=app)) as browser:
+                self.assertEqual((await browser.get('/api/conversations')).status_code,401)
+                self.assertEqual((await browser.post('/api/auth/login',json={'password':'long-test-password'},headers={'Origin':'https://evil.invalid'})).status_code,403)
+                response=await browser.post('/api/auth/login',json={'password':'long-test-password'},headers={'Origin':'https://studio.home.arpa'})
+                self.assertEqual(response.status_code,200,response.text)
+                cookie=response.headers['set-cookie'].lower()
+                self.assertIn('httponly',cookie)
+                self.assertIn('secure',cookie)
+                self.assertIn('samesite=strict',cookie)
+                self.assertTrue((await browser.get('/api/auth/me')).json()['authenticated'])
+                self.assertEqual((await browser.get('/api/admin/settings')).status_code,200)
+                token=browser.cookies.get(COOKIE)
+                original_hash=config.admin_password_hash
+                config.admin_password_hash=hash_password('rotated-test-password')
+                self.assertEqual((await browser.get('/api/admin/settings')).status_code,401)
+                config.admin_password_hash=original_hash
+                with SessionLocal() as session:
+                    row=session.scalar(select(Record).where(Record.kind=='auth_session'))
+                    self.assertNotEqual(row.name,token)
+                    self.assertNotIn(token,str(row.payload))
+                await browser.post('/api/auth/logout',headers={'Origin':'https://studio.home.arpa'})
+                self.assertEqual((await browser.get('/api/conversations')).status_code,401)
+                browser.cookies.set(COOKIE,token)
+                self.assertEqual((await browser.get('/api/admin/settings')).status_code,401)
+        finally:
+            config.lan_mode,config.web_origin,config.admin_password_hash=old
+            failures.clear()
+
+    async def test_login_rate_limit_and_expired_sessions(self):
+        from backend.core.config import settings
+        from backend.services.auth import hash_password
+        from backend.api.auth import failures
+        from backend.database.session import SessionLocal
+        from backend.models.entities import Record
+        from sqlalchemy import select
+        config=settings()
+        old=config.admin_password_hash
+        config.admin_password_hash=hash_password('long-test-password')
+        failures.clear()
+        try:
+            for _ in range(5):
+                self.assertEqual((await self.client.post('/api/auth/login',json={'password':'wrong'})).status_code,401)
+            self.assertEqual((await self.client.post('/api/auth/login',json={'password':'wrong'})).status_code,429)
+            failures.clear()
+            self.assertEqual((await self.client.post('/api/auth/login',json={'password':'long-test-password'})).status_code,200)
+            with SessionLocal.begin() as session:
+                row=session.scalar(select(Record).where(Record.kind=='auth_session'))
+                row.payload={**row.payload,'expires_at':0}
+            self.assertFalse((await self.client.get('/api/auth/me')).json()['authenticated'])
+            self.assertEqual((await self.client.get('/api/admin/settings')).status_code,401)
+        finally:
+            config.admin_password_hash=old
+            failures.clear()
+
+    async def test_running_benchmark_cancellation_closes_provider_and_releases_jobs(self):
+        import asyncio
+        from unittest.mock import patch
+        from backend.schemas.benchmark import BenchmarkInput
+        entered=asyncio.Event()
+        closed=[]
+        async def chat(payload):
+            try:
+                entered.set()
+                await asyncio.Event().wait()
+                yield {'done':True}
+            finally:
+                closed.append(True)
+        with patch.object(app.state.provider,'chat',side_effect=chat):
+            identifier=app.state.benchmarks.start(BenchmarkInput(model='fixture',prompt='test',configurations=[{'name':'a','configuration':{}}]))
+            await entered.wait()
+            await app.state.benchmarks.cancel(identifier)
+        self.assertTrue(closed)
+        self.assertFalse(active_jobs)
+        self.assertFalse(runtime.benchmark_active)
+        self.assertEqual((await self.client.get(f'/api/benchmarks/{identifier}')).json()['status'],'cancelled')
+
+    async def test_failed_benchmark_preserves_error_without_keeping_runtime_locked(self):
+        from unittest.mock import patch
+        from backend.schemas.benchmark import BenchmarkInput
+        from backend.providers.base import ProviderUnavailable
+        async def chat(payload):
+            raise ProviderUnavailable('fixture model missing')
+            yield
+        with patch.object(app.state.provider,'chat',side_effect=chat):
+            identifier=app.state.benchmarks.start(BenchmarkInput(model='fixture',prompt='test',configurations=[{'name':'a','configuration':{}}]))
+            await app.state.benchmarks.task
+        response=(await self.client.get(f'/api/benchmarks/{identifier}')).json()
+        self.assertEqual(response['status'],'failed')
+        self.assertIn('fixture model missing',str(response['results']))
+        self.assertFalse(runtime.benchmark_active)
+        self.assertFalse(active_jobs)
+
+    async def test_lan_startup_requires_https_and_password_hash(self):
+        from backend.core.config import settings
+        config=settings()
+        old=config.lan_mode
+        config.lan_mode=True
+        try:
+            with self.assertRaises(RuntimeError):
+                async with app.router.lifespan_context(app):
+                    self.fail('Unsafe LAN mode was allowed')
+        finally:
+            config.lan_mode=old
+
+    async def test_untrusted_host_and_oversized_payload_are_rejected(self):
+        from backend.core.config import settings
+        self.assertEqual((await self.client.get('/api/conversations',headers={'Host':'evil.invalid'})).status_code,400)
+        config=settings()
+        old=config.max_request_bytes
+        config.max_request_bytes=65536
+        try:
+            response=await self.client.post('/api/chat',content=b'x'*65537,headers={'content-type':'application/json'})
+            self.assertEqual(response.status_code,413,response.text)
+            async def chunks():
+                yield b'x'*32768
+                yield b'x'*32769
+            response=await self.client.post('/api/chat',content=chunks(),headers={'content-type':'application/json'})
+            self.assertEqual(response.status_code,413,response.text)
+        finally:
+            config.max_request_bytes=old
+
+    async def test_disconnect_before_response_headers_releases_chat_and_model_locks(self):
+        from fastapi import Request
+        from starlette.requests import ClientDisconnect
+        from backend.api.workspace import chat, model_operation
+        from backend.schemas.inference import ChatInput, ModelInput
+        scope={'type':'http','method':'POST','path':'/api/chat','headers':[],'app':app,'asgi':{'spec_version':'2.4'}}
+        async def disconnected():
+            return {'type':'http.disconnect'}
+        async def fail_send(message):
+            raise OSError('client disconnected before headers')
+        cid=await self.create()
+        response=await chat(ChatInput(model='fixture',content='Hi',conversation_id=cid),Request(scope))
+        self.assertTrue(active_jobs)
+        with self.assertRaises(ClientDisconnect):
+            await response(scope,disconnected,fail_send)
+        self.assertFalse(active_jobs)
+        self.assertFalse(active_conversations)
+        response=await model_operation('pull',ModelInput(model='fixture'),Request(scope))
+        self.assertTrue(runtime.model_operations)
+        with self.assertRaises(ClientDisconnect):
+            await response(scope,disconnected,fail_send)
+        self.assertFalse(runtime.model_operations)

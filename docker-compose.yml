@@ -1,0 +1,55 @@
+# Linux-only: host networking reaches the host's loopback-only Ollama.
+# Both processes still bind to 127.0.0.1; no public ports are published.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/backend.Dockerfile
+    network_mode: host
+    env_file:
+      - path: .env
+        format: raw
+    environment:
+      STUDIO_DATABASE_URL: sqlite:////app/data/studio.db
+    volumes:
+      - studio-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/auth/me', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    network_mode: host
+    env_file:
+      - path: .env
+        format: raw
+    environment:
+      NEXT_TELEMETRY_DISABLED: '1'
+      HOSTNAME: 127.0.0.1
+      PORT: '3000'
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+volumes:
+  studio-data:

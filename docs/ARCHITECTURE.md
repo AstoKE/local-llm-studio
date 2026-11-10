@@ -1,53 +1,56 @@
 # Architecture
 
-## Scope and data flow
+## Request and runtime boundaries
 
-Browser → Next.js same-origin `/api` rewrite → loopback FastAPI → provider interface → loopback Ollama → host hardware.
+Local browser → Next.js same-origin API rewrite → loopback FastAPI → provider adapter → loopback Ollama → host hardware.
 
-Next.js owns presentation and navigation. FastAPI owns validation, authorization, persistence, provider orchestration and host telemetry. The browser never receives provider credentials or selects an arbitrary upstream URL. Endpoint configuration is server-side environment only. HTTP clients disable environment proxy inheritance and have bounded timeouts.
+Optional LAN browser → HTTPS gateway bound to a private IP → loopback Next.js → loopback FastAPI. Both application processes and Ollama retain loopback listeners. No cloud component is required; the LAN gateway can issue certificates through its local CA.
 
-`backend/providers/base.py` defines the initial read-only provider contract; `ollama.py` translates `/api/version`, `/api/tags` and `/api/ps`. Future phases must extend the contract with explicit capabilities, validated inference parameters and cancellable asynchronous event streams before implementing chat or adding llama.cpp/vLLM/OpenAI adapters. Unsupported parameters must be rejected, not discarded.
+Next.js owns presentation, navigation, Markdown rendering, NDJSON decoding and charts. FastAPI owns validation, authorization, persistence, runtime admission, benchmark orchestration and host telemetry. The browser never selects an arbitrary proxy path or receives server environment secrets. Initial support is Ollama; the provider contract separates status/model operations and asynchronous chat/download streams from application workflows. Future llama.cpp/vLLM/OpenAI-compatible adapters should implement capabilities and explicit option validation before enabling settings in the UI. Administration currently identifies its endpoint as Ollama-specific.
 
-`backend/services` holds host telemetry; `backend/api` orchestrates responses. SQLAlchemy entities and Alembic revisions live separately. SQLite tables provide conversations, messages and typed structured records for future presets, settings, benchmarks and measurements. The generic records table is a foundation, not implemented feature APIs. Migrations are explicit and run before serving. Future writes need transactions, retention controls and foreign-key enforcement.
+## Persistence
 
-## UI
+SQLAlchemy/SQLite is managed by explicit Alembic revisions applied by scripts/backend.sh:
 
-App Router renders a common responsive dark workspace. A small shadcn-style Button uses Radix Slot and class-variance-authority. Lucide supplies icons; Recharts plots only actual session samples. System metrics are polled every five seconds; unavailable GPU values stay unavailable. Models are displayed only from provider responses.
+- 0001: conversations, messages and structured records.
+- 0002: indexed system_samples and inference_runs.
 
-## Security boundary
+Conversations persist selected model/configuration. Editing a user message truncates later messages; regenerate replaces the last assistant response. Failed/interrupted assistant output is retained with a status but excluded from subsequent model context. Playground does not persist message content unless explicitly saved as a conversation.
 
-Default scripts bind both servers to loopback. No CORS wildcard, shell execution API, model mutations or unauthenticated administration endpoints exist. NVIDIA telemetry uses fixed subprocess arguments with a timeout. Remote direct backend requests require a server-configured bearer secret of at least 32 characters. This is a preliminary safeguard, not completed LAN authentication: Next.js rewrites originate on loopback. Do not bind Next.js to a LAN interface until a trusted authenticating reverse proxy and browser session controls exist.
+Structured records hold presets, per-model preferences, application defaults, benchmark definitions/results and hashed session records. Saved provider settings take precedence over the environment fallback at restart. Theme/default inference preferences are separately exposed from administrator settings; secrets and password hashes are never returned. Monitoring rows deliberately contain no prompts/system prompts/output text. Benchmark definitions intentionally retain the user-supplied test prompt and configuration, without generated response text.
 
-Phase 4 must implement principals, roles, password hashing or external proxy authentication, session expiration, CSRF protection for cookie sessions, rate limiting and administrator checks on downloads/destructive actions. Treat proxy-forwarded identities as untrusted unless the proxy is explicitly trusted. Never expose Ollama publicly.
+## Streaming and admission
 
-## Planned execution semantics
+Provider streams map to token/done/error NDJSON events. After headers have been sent, failures are explicit stream events. A stream ending without completion is an error. Closing the client connection closes the upstream iterator, preserves partial saved-chat output and releases active-job state; the runtime controls actual cancellation latency.
 
-Chat: persist input, stream provider events, preserve provider token/duration counters, label application TTFT separately, cancel upstream on disconnect, persist completed/aborted state. Benchmark: one queue, sequential configurations, warm-up excluded from summaries, repeated runs and actual memory samples. Store provider measurements separately from client estimates. None of these workflows is implemented in Phase 1.
+Process-local admission permits concurrent unrelated chats but serializes each conversation. Benchmarks require no active application inference/model operations, reserve inference for their lifetime and run configurations/rounds sequentially. Competing benchmark/chat/model operations receive 409. No parallel benchmark mode is exposed. Direct workloads launched outside this application cannot be controlled. Use **one backend worker**.
 
-## Dependency policy
+Benchmark tasks survive browser disconnection. Optional warm-ups precede each configuration's measured repetitions; only successful measured results contribute to comparison means. Cancellation closes the provider iterator, retains completed rounds and releases admission. Shutdown cancels a job; startup marks orphaned running records interrupted. Provider failures preserve a failed result rather than producing a success measurement.
 
-Version ranges are bounded by major versions. Frontend lockfile and exact Python freeze must be generated after successful dependency resolution. Phase 1 cannot be considered fully verified until migrations, backend API integration tests, frontend type checks, production build and browser checks pass.
+## Performance and hardware
 
-References: [Next.js installation](https://nextjs.org/learn/react-foundations/installation), [Ollama API specification](https://github.com/ollama/ollama/blob/main/docs/openapi.yaml).
+The lifespan-managed sampler runs independently of frontend requests. Blocking host/SQLite sampling work uses asyncio's executor. The last sample is cached for dashboard reads; the Monitoring API flags stale observations and sampler/storage failures. A storage lock coordinates recording with database maintenance. Host history expires after the configured duration and is additionally capped at 20,000 observations; inference history is capped at 10,000 attempts. Charts select at most 600 actual points and never invent missing values.
 
-## Phase 2 implementation update
+NVIDIA uses fixed-argument nvidia-smi subprocesses with timeout/cancellation cleanup, never a shell. Read-only DRM/sysfs adds available AMD measurements and partial device enumeration for Intel/other systems. Missing utilization/VRAM fields remain null. Stable device IDs distinguish GPU series. CPU/RAM and GPU readings are whole-host/device measurements, not model allocations.
 
-The provider contract now includes async chat/pull streams and model operations. API workspace routes own conversation CRUD, bounded strict Pydantic options, presets, per-model configuration records and explicit Playground snapshots. `services/chat.py` constructs server history, serializes generation per conversation, persists completed/failed/interrupted responses and releases active-job state. The upstream iterator is explicitly closed. Client disconnects close the stream; actual runtime cancellation behavior must still be tested.
+Ollama token counters and nanosecond durations are preserved. Output throughput derives from eval_count / eval_duration; TTFT and stream lifetime are labeled application monotonic-clock observations. Benchmark RAM peaks are sampled every 250ms plus endpoints. GPU peaks use only background observations timestamped during the run, so short runs can have no GPU observation. Warm-up attempts do not enter inference monitoring history.
 
-FastAPI and Next.js remain loopback-only. Model operations always require constant-time bearer-token authentication, including requests proxied by Next.js. Browser mutation origin is checked against STUDIO_WEB_ORIGIN; frontend never stores the token in localStorage. This is a single-user local workspace, not completed RBAC or LAN security. Settings and preset data use the existing records table; no new migration is required. Synchronous short SQLite transactions run on the serving process. Use one Uvicorn worker: active conversation locks and job counts are process-local.
+## Authentication and security
 
-Messages hold raw provider statistics and a separate application TTFT measurement. Frontend decodes NDJSON incrementally with UTF-8 support, exposes stop/copy/edit/regenerate and uses safe React text rendering with a limited Markdown subset. No raw HTML from models is executed. Exact dependencies are captured in frontend package-lock.json and backend requirements.lock.txt; successful resolution does not constitute a dependency security audit.
+Localhost chat remains usable without login. Administrator actions (model mutation and administration) always require either a valid browser session or a configured bearer token. LAN mode additionally protects all backend routes except login/session-status. Backend authorization is authoritative; Next.js proxy provides page-level login redirection and fails closed when session validation is unavailable.
 
-The earlier foundation-only scope paragraphs describe the Phase 1 baseline. Current feature/API status is maintained in FEATURES.md and API.md.
+Passwords are configured as scrypt hashes in environment variables. Login checks constant-time digest comparison, rate limits failed attempts, rotates sessions and returns HttpOnly/SameSite=Strict cookies (Secure in LAN mode). SQLite stores only a SHA-256 digest of the random session token, expiry, role and credential version. Logout revokes it; expiry or password-hash rotation invalidates it. Secrets never enter localStorage; theme preference may. The current identity model is a single administrator and a local-mode principal, not a multi-user ownership/RBAC system.
 
-## Phase 3 implementation
+Mutation requests reject unexpected Origin/cross-site headers. Loopback hostname aliases are allowed only on the configured origin's scheme/port. All API responses use no-store. Inputs use bounded Pydantic schemas that reject unknown settings. Provider URLs reject embedded credentials, fragments and queries. No arbitrary shell execution or SQL endpoint exists; maintenance allows only idle SQLite vacuum/monitoring cleanup. LAN startup requires an HTTPS origin and valid password hash. Never expose Ollama publicly. See LAN_ACCESS.md for deployment and remaining verification.
 
-`services/monitoring.py` owns a lifespan-managed background sampler. It samples host hardware, caches the last observation for dashboard reads, and writes independent system_samples rows. Blocking CPU/kernel/SQLite sampling work is dispatched to asyncio's thread executor. GPU subprocesses use fixed arguments, bounded timeouts and cancellation cleanup; no shell is invoked. Sampling waits the configured interval after each collection, so actual sample spacing includes collection time and is visible through UTC timestamps. Graceful shutdown cancels the sampler task.
+## Verification and remaining work
 
-`services/system.py` prefers nvidia-smi measurements and merges additional DRM devices identified through read-only sysfs. AMD gpu_busy_percent/mem_info_vram_* values are read only when exposed. Intel/other unsupported fields remain null. Device IDs allow chart series to distinguish multiple GPUs; source is attached to every device. These whole-host/device readings do not measure the memory attributable to one inference job.
+Phase 4 implements benchmarking and initial administration/LAN security. Test results and limitations are recorded in TESTING.md; fixtures are not real inference, TLS, proxy or browser verification. Production build and hardware/second-device acceptance remain required. Phase 5 provides broader security/transport regressions, a prepared browser fixture suite, disposable migration verification, real-service smoke tooling, native user-service examples and optional Linux Compose/standalone packaging. Production/runtime acceptance remains in RELEASE_CHECKLIST.md; full multi-user/RBAC is not implemented.
 
-Each inference attempt persists an independent InferenceRun in the stream finalizer, including interrupted/failed attempts and Playground runs. Message content is excluded. Provider token counts/durations retain their original units; calculated throughput is derived from output evaluation, and application TTFT/lifetime are labeled separately. Job locks are released even if message persistence fails. Telemetry persistence failure is logged and does not replace a valid model response.
+References: [Next.js Proxy](https://nextjs.org/docs/app/api-reference/file-conventions/proxy), [Ollama native API](https://github.com/ollama/ollama/blob/main/docs/api.md), [AMDGPU sysfs](https://docs.kernel.org/gpu/amdgpu/driver-misc.html), [Caddy local TLS](https://caddyserver.com/docs/caddyfile/directives/tls).
 
-Migration 0002 introduces the two indexed tables without changing existing chat tables. Bounded retention avoids indefinite growth: system time cutoff plus a 20,000-row cap, inference count cap of 10,000. Monitoring reads are bounded and select up to 600 actual host points; inference pages use stable descending IDs. Recent cache is marked stale rather than presenting old values as live. Browser pause affects polling only. Authentication/LAN and sequential benchmarking remain Phase 4.
+## Phase 5 hardening
 
-References: [Ollama native API](https://github.com/ollama/ollama/blob/main/docs/api.md), [AMDGPU sysfs memory reporting](https://docs.kernel.org/gpu/amdgpu/driver-misc.html), [AMDGPU utilization interfaces](https://kernel.org/doc/html/latest/gpu/amdgpu/thermal.html).
+FastAPI and Next.js validate actual Host names against loopback/configured origins before trusted API proxying. A body-limiting ASGI middleware bounds JSON buffering (2 MiB by default), including chunked requests, without buffering response streams. ManagedStreamingResponse closes iterators and releases resource admission even if response headers cannot be sent. These cases have explicit regression tests.
+
+Deployment keeps existing API URLs with Next.js standalone output and loopback Linux host-network Compose services. Backend data is a separate named volume; secrets/data/tests are excluded from image context and containers use non-root/read-only defaults. Native production scripts and user-service examples preserve local binding. No infrastructure was published or enabled automatically. See DEPLOYMENT.md for operator setup and verification limits.

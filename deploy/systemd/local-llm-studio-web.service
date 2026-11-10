@@ -1,0 +1,16 @@
+[Unit]
+Description=Local LLM Studio web interface
+After=local-llm-studio-backend.service
+Wants=local-llm-studio-backend.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/code/local-llm-studio
+ExecStart=%h/code/local-llm-studio/scripts/web.sh --production
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

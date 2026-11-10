@@ -13,7 +13,7 @@ router = APIRouter(prefix='/api')
 async def health():
     with SessionLocal() as session:
         session.execute(text('SELECT 1'))
-    return {'status': 'ok', 'database': 'connected', 'phase': 3}
+    return {'status': 'ok', 'database': 'connected', 'phase': 5}
 
 @router.get('/models')
 async def models(request: Request):
